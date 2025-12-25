@@ -2,7 +2,6 @@ package pkg
 
 import (
 	"encoding/json"
-	"reflect"
 	"strconv"
 	"time"
 )
@@ -186,15 +185,14 @@ type UserTraffic struct {
 
 // Helper function to convert dynamic interval types to time.Duration
 func IntervalToTime(i interface{}) time.Duration {
-	switch reflect.TypeOf(i).Kind() {
-	case reflect.Int:
-		return time.Duration(i.(int)) * time.Second
-	case reflect.String:
-		i, _ := strconv.Atoi(i.(string))
-		return time.Duration(i) * time.Second
-	case reflect.Float64:
-		return time.Duration(i.(float64)) * time.Second
-	default:
-		return time.Duration(reflect.ValueOf(i).Int()) * time.Second
+	switch v := i.(type) {
+	case int:
+		return time.Duration(v) * time.Second
+	case string:
+		val, _ := strconv.Atoi(v)
+		return time.Duration(val) * time.Second
+	case float64:
+		return time.Duration(v) * time.Second
 	}
+	return 0
 }

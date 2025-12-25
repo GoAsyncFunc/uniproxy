@@ -1,6 +1,7 @@
 package pkg
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	resty "github.com/go-resty/resty/v2"
@@ -26,6 +28,17 @@ type Config struct {
 	Debug     bool
 }
 
+const (
+	apiConfigPath     = "/api/v1/server/UniProxy/config"
+	apiUserPath       = "/api/v1/server/UniProxy/user"
+	apiPushPath       = "/api/v1/server/UniProxy/push"
+	apiAlivePath      = "/api/v1/server/UniProxy/alive"
+	headerIfNoneMatch = "If-None-Match"
+	headerETag        = "ETag"
+	contentTypeJSON   = "application/json"
+	headerContentType = "Content-Type"
+)
+
 // Client APIClient create a api client to the panel.
 type Client struct {
 	client           *resty.Client
@@ -34,6 +47,7 @@ type Client struct {
 	Token            string
 	NodeType         string
 	NodeId           int
+	mu               sync.RWMutex // Protects mutable state
 	nodeEtag         string
 	userEtag         string
 	responseBodyHash string
@@ -116,13 +130,18 @@ func (c *Client) checkResponse(r *resty.Response, path string, err error) error 
 	return nil
 }
 
-func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
-	const path = "/api/v1/server/UniProxy/config"
+func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
+	c.mu.RLock()
+	currentEtag := c.nodeEtag
+	currentBodyHash := c.responseBodyHash
+	c.mu.RUnlock()
+
 	r, err := c.client.
 		R().
-		SetHeader("If-None-Match", c.nodeEtag).
-		ForceContentType("application/json").
-		Get(path)
+		SetContext(ctx).
+		SetHeader(headerIfNoneMatch, currentEtag).
+		ForceContentType(contentTypeJSON).
+		Get(apiConfigPath)
 
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
@@ -133,12 +152,18 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 	}
 	hash := sha256.Sum256(r.Body())
 	newBodyHash := hex.EncodeToString(hash[:])
-	if c.responseBodyHash == newBodyHash {
+
+	if currentBodyHash == newBodyHash {
 		return nil, nil
 	}
+
+	// Lock for writing updates
+	c.mu.Lock()
 	c.responseBodyHash = newBodyHash
-	c.nodeEtag = r.Header().Get("ETag")
-	if err = c.checkResponse(r, path, err); err != nil {
+	c.nodeEtag = r.Header().Get(headerETag)
+	c.mu.Unlock()
+
+	if err = c.checkResponse(r, apiConfigPath, err); err != nil {
 		return nil, err
 	}
 
@@ -158,93 +183,67 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 	var cm *CommonNode
 	switch c.NodeType {
 	case "vmess":
-		rsp := &VMessNode{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode vmess params error: %s", err)
+		node.VMess, cm, err = parseNodeWithCommon[VMessNode](r.Body())
+		if err == nil {
+			// Handle legacy field mapping for VMess
+			if len(node.VMess.NetworkSettingsBack) > 0 {
+				node.VMess.NetworkSettings = node.VMess.NetworkSettingsBack
+				node.VMess.NetworkSettingsBack = nil
+			}
+			if node.VMess.TlsSettingsBack != nil {
+				node.VMess.TlsSettings = *node.VMess.TlsSettingsBack
+				node.VMess.TlsSettingsBack = nil
+			}
+			node.Security = node.VMess.Tls
 		}
-		if len(rsp.NetworkSettingsBack) > 0 {
-			rsp.NetworkSettings = rsp.NetworkSettingsBack
-			rsp.NetworkSettingsBack = nil
-		}
-		if rsp.TlsSettingsBack != nil {
-			rsp.TlsSettings = *rsp.TlsSettingsBack
-			rsp.TlsSettingsBack = nil
-		}
-		cm = &rsp.CommonNode
-		node.VMess = rsp
-		node.Security = node.VMess.Tls
 	case "vless":
-		rsp := &VlessNode{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode vless params error: %s", err)
+		node.Vless, cm, err = parseNodeWithCommon[VlessNode](r.Body())
+		if err == nil {
+			// Handle legacy field mapping for VLESS
+			if len(node.Vless.NetworkSettingsBack) > 0 {
+				node.Vless.NetworkSettings = node.Vless.NetworkSettingsBack
+				node.Vless.NetworkSettingsBack = nil
+			}
+			if node.Vless.TlsSettingsBack != nil {
+				node.Vless.TlsSettings = *node.Vless.TlsSettingsBack
+				node.Vless.TlsSettingsBack = nil
+			}
+			node.Security = node.Vless.Tls
 		}
-		if len(rsp.NetworkSettingsBack) > 0 {
-			rsp.NetworkSettings = rsp.NetworkSettingsBack
-			rsp.NetworkSettingsBack = nil
-		}
-		if rsp.TlsSettingsBack != nil {
-			rsp.TlsSettings = *rsp.TlsSettingsBack
-			rsp.TlsSettingsBack = nil
-		}
-		cm = &rsp.CommonNode
-		node.Vless = rsp
-		node.Security = node.Vless.Tls
 	case "shadowsocks":
-		rsp := &ShadowsocksNode{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode shadowsocks params error: %s", err)
+		node.Shadowsocks, cm, err = parseNodeWithCommon[ShadowsocksNode](r.Body())
+		if err == nil {
+			node.Security = None
 		}
-		cm = &rsp.CommonNode
-		node.Shadowsocks = rsp
-		node.Security = None
 	case "trojan":
-		rsp := &TrojanNode{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode trojan params error: %s", err)
+		node.Trojan, cm, err = parseNodeWithCommon[TrojanNode](r.Body())
+		if err == nil {
+			node.Security = Tls
 		}
-		cm = &rsp.CommonNode
-		node.Trojan = rsp
-		node.Security = Tls
 	case "tuic":
-		rsp := &TuicNode{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode tuic params error: %s", err)
+		node.Tuic, cm, err = parseNodeWithCommon[TuicNode](r.Body())
+		if err == nil {
+			node.Security = Tls
 		}
-		cm = &rsp.CommonNode
-		node.Tuic = rsp
-		node.Security = Tls
 	case "anytls":
-		rsp := &AnyTlsNode{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode anytls params error: %s", err)
+		node.AnyTls, cm, err = parseNodeWithCommon[AnyTlsNode](r.Body())
+		if err == nil {
+			node.Security = Tls
 		}
-		cm = &rsp.CommonNode
-		node.AnyTls = rsp
-		node.Security = Tls
 	case "hysteria":
-		rsp := &HysteriaNode{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode hysteria params error: %s", err)
+		node.Hysteria, cm, err = parseNodeWithCommon[HysteriaNode](r.Body())
+		if err == nil {
+			node.Security = Tls
 		}
-		cm = &rsp.CommonNode
-		node.Hysteria = rsp
-		node.Security = Tls
 	case "hysteria2":
-		rsp := &Hysteria2Node{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode hysteria2 params error: %s", err)
+		node.Hysteria2, cm, err = parseNodeWithCommon[Hysteria2Node](r.Body())
+		if err == nil {
+			node.Security = Tls
 		}
-		cm = &rsp.CommonNode
-		node.Hysteria2 = rsp
-		node.Security = Tls
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("decode %s params error: %w", c.NodeType, err)
 	}
 
 	// parse rules and dns
@@ -306,58 +305,123 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 }
 
 // GetUserList will pull user from v2board
-func (c *Client) GetUserList() ([]UserInfo, error) {
-	const path = "/api/v1/server/UniProxy/user"
+// GetUserList will pull user from v2board
+func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
+	c.mu.RLock()
+	currentEtag := c.userEtag
+	c.mu.RUnlock()
+
 	r, err := c.client.R().
-		SetHeader("If-None-Match", c.userEtag).
-		ForceContentType("application/json").
-		Get(path)
+		SetContext(ctx).
+		SetHeader(headerIfNoneMatch, currentEtag).
+		ForceContentType(contentTypeJSON).
+		Get(apiUserPath)
 
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 
 	if r.StatusCode() == 304 {
-		return c.UserList.Users, nil
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		if c.UserList != nil {
+			return c.UserList.Users, nil
+		}
+		return nil, nil // Should not happen if etag matches, but handle gracefully
 	}
 
-	if err = c.checkResponse(r, path, err); err != nil {
+	if err = c.checkResponse(r, apiUserPath, err); err != nil {
 		return nil, err
 	}
 
 	userlist := &UserListBody{}
-	// Fallback to standard JSON since we don't assume msgpack support in this environment yet
-	// If the server returns application/json, this works.
 	if err := json.Unmarshal(r.Body(), userlist); err != nil {
 		return nil, fmt.Errorf("decode user list error: %w", err)
 	}
 
-	c.userEtag = r.Header().Get("ETag")
+	c.mu.Lock()
+	c.userEtag = r.Header().Get(headerETag)
 	c.UserList = userlist
+	c.mu.Unlock()
+
 	return userlist.Users, nil
 }
 
 // Upload/Download are type int64 in UserTraffic struct in model.go
-func (c *Client) ReportUserTraffic(userTraffic []UserTraffic) error {
+func (c *Client) ReportUserTraffic(ctx context.Context, userTraffic []UserTraffic) error {
 	data := make(map[int][]int64, len(userTraffic))
 	for i := range userTraffic {
 		data[userTraffic[i].UID] = []int64{userTraffic[i].Upload, userTraffic[i].Download}
 	}
-	const path = "/api/v1/server/UniProxy/push"
 	r, err := c.client.R().
+		SetContext(ctx).
 		SetBody(data).
-		ForceContentType("application/json").
-		Post(path)
+		ForceContentType(contentTypeJSON).
+		Post(apiPushPath)
 
-	return c.checkResponse(r, path, err)
+	return c.checkResponse(r, apiPushPath, err)
 }
 
-func (c *Client) ReportNodeOnlineUsers(data map[int][]string) error {
-	const path = "/api/v1/server/UniProxy/alive"
+func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]string) error {
 	r, err := c.client.R().
+		SetContext(ctx).
 		SetBody(data).
-		ForceContentType("application/json").
-		Post(path)
+		ForceContentType(contentTypeJSON).
+		Post(apiAlivePath)
 
-	return c.checkResponse(r, path, err)
+	return c.checkResponse(r, apiAlivePath, err)
+}
+
+// Helper generic function to parsing node
+type commonNodeGetter interface {
+	GetCommonNode() *CommonNode
+}
+
+func parseNodeWithCommon[T any](data []byte) (*T, *CommonNode, error) {
+	var node T
+	if err := json.Unmarshal(data, &node); err != nil {
+		return nil, nil, err
+	}
+	// Use reflection to extract CommonNode field since Go generics don't support struct field access directly without interface
+	// Ideally structs should implement an interface, but for now we assume structure match.
+	// Actually, since we are inside the package, we know the structure.
+	// But we need to return *CommonNode.
+	// Let's use a simpler approach: define an interface or just use reflection here as it happens once per config update (rare).
+	// Better yet, since all node types embed CommonNode, we can cast if we define an interface.
+
+	// A faster way without reflection for known types:
+	// We already reformatted the switch case to handle this.
+	// But wait, I need to extract CommonNode from T.
+
+	// Let's rely on the caller to do the assignment or use reflection carefully.
+	// Since all node types have CommonNode as first field (embedded), we can unsafe pointer cast or reflection.
+	// Safe way for now: return T and let caller handle.
+	// But the caller block was designed to be generic.
+
+	// Actually, let's keep it simple. We will return the Typed struct and the CommonNode.
+	// Since we can't easily interface the field access generically in Go 1.20 without methods.
+
+	v := any(&node)
+	var cm *CommonNode
+
+	switch t := v.(type) {
+	case *VMessNode:
+		cm = &t.CommonNode
+	case *VlessNode:
+		cm = &t.CommonNode
+	case *ShadowsocksNode:
+		cm = &t.CommonNode
+	case *TrojanNode:
+		cm = &t.CommonNode
+	case *TuicNode:
+		cm = &t.CommonNode
+	case *AnyTlsNode:
+		cm = &t.CommonNode
+	case *HysteriaNode:
+		cm = &t.CommonNode
+	case *Hysteria2Node:
+		cm = &t.CommonNode
+	}
+
+	return &node, cm, nil
 }
