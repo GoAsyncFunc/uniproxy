@@ -109,8 +109,10 @@ type RealityConfig struct {
 
 type ShadowsocksNode struct {
 	CommonNode
-	Cipher    string `json:"cipher"`
-	ServerKey string `json:"server_key"`
+	Cipher       string          `json:"cipher"`
+	ServerKey    string          `json:"server_key"`
+	Obfs         string          `json:"obfs"`
+	ObfsSettings json.RawMessage `json:"obfs_settings"`
 }
 
 type TrojanNode struct {
