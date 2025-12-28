@@ -36,7 +36,6 @@ const (
 	headerIfNoneMatch = "If-None-Match"
 	headerETag        = "ETag"
 	contentTypeJSON   = "application/json"
-	headerContentType = "Content-Type"
 )
 
 // Client APIClient create a api client to the panel.
@@ -305,7 +304,6 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 }
 
 // GetUserList will pull user from v2board
-// GetUserList will pull user from v2board
 func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 	c.mu.RLock()
 	currentEtag := c.userEtag
@@ -372,11 +370,6 @@ func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]strin
 	return c.checkResponse(r, apiAlivePath, err)
 }
 
-// Helper generic function to parsing node
-type commonNodeGetter interface {
-	GetCommonNode() *CommonNode
-}
-
 func parseNodeWithCommon[T any](data []byte) (*T, *CommonNode, error) {
 	var node T
 	if err := json.Unmarshal(data, &node); err != nil {
@@ -401,26 +394,20 @@ func parseNodeWithCommon[T any](data []byte) (*T, *CommonNode, error) {
 	// Actually, let's keep it simple. We will return the Typed struct and the CommonNode.
 	// Since we can't easily interface the field access generically in Go 1.20 without methods.
 
-	v := any(&node)
-	var cm *CommonNode
+	// Use polymorphic interface to get CommonNode
+	// We need to type assert the POINTER to the struct to the Node interface
+	// because the methods are defined on the pointer receiver (*T).
+	// Since 'node' is type T (the struct), '&node' is *T.
 
-	switch t := v.(type) {
-	case *VMessNode:
-		cm = &t.CommonNode
-	case *VlessNode:
-		cm = &t.CommonNode
-	case *ShadowsocksNode:
-		cm = &t.CommonNode
-	case *TrojanNode:
-		cm = &t.CommonNode
-	case *TuicNode:
-		cm = &t.CommonNode
-	case *AnyTlsNode:
-		cm = &t.CommonNode
-	case *HysteriaNode:
-		cm = &t.CommonNode
-	case *Hysteria2Node:
-		cm = &t.CommonNode
+	var cm *CommonNode
+	if n, ok := any(&node).(Node); ok {
+		cm = n.GetCommonNode()
+	} else {
+		// This should theoretically not happen if T is one of the supported types that implement Node
+		// But if T is a new type that doesn't implement Node, we should probably error or just return nil common
+		// For strictness, let's keep it as is or return error?
+		// With current usage, all cases are covered.
+		// If casting fails, cm remains nil.
 	}
 
 	return &node, cm, nil

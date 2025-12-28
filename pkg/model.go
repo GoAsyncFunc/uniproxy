@@ -42,6 +42,11 @@ type CommonNode struct {
 	BaseConfig *BaseConfig `json:"base_config"`
 }
 
+// Node interface for polymorphic handling
+type Node interface {
+	GetCommonNode() *CommonNode
+}
+
 type Route struct {
 	Id          int         `json:"id"`
 	Match       interface{} `json:"match"`
@@ -67,6 +72,10 @@ type VMessNode struct {
 	ServerName          string          `json:"server_name"`
 }
 
+func (n *VMessNode) GetCommonNode() *CommonNode {
+	return &n.CommonNode
+}
+
 // VlessNode is vless node info
 type VlessNode struct {
 	CommonNode
@@ -81,6 +90,10 @@ type VlessNode struct {
 	ServerName          string          `json:"server_name"`
 	Flow                string          `json:"flow"`
 	RealityConfig       RealityConfig   `json:"-"`
+}
+
+func (n *VlessNode) GetCommonNode() *CommonNode {
+	return &n.CommonNode
 }
 
 type TlsSettings struct {
@@ -115,10 +128,18 @@ type ShadowsocksNode struct {
 	ObfsSettings json.RawMessage `json:"obfs_settings"`
 }
 
+func (n *ShadowsocksNode) GetCommonNode() *CommonNode {
+	return &n.CommonNode
+}
+
 type TrojanNode struct {
 	CommonNode
 	Network         string          `json:"network"`
 	NetworkSettings json.RawMessage `json:"networkSettings"`
+}
+
+func (n *TrojanNode) GetCommonNode() *CommonNode {
+	return &n.CommonNode
 }
 
 type TuicNode struct {
@@ -127,9 +148,17 @@ type TuicNode struct {
 	ZeroRTTHandshake  bool   `json:"zero_rtt_handshake"`
 }
 
+func (n *TuicNode) GetCommonNode() *CommonNode {
+	return &n.CommonNode
+}
+
 type AnyTlsNode struct {
 	CommonNode
 	PaddingScheme []string `json:"padding_scheme,omitempty"`
+}
+
+func (n *AnyTlsNode) GetCommonNode() *CommonNode {
+	return &n.CommonNode
 }
 
 type HysteriaNode struct {
@@ -139,6 +168,10 @@ type HysteriaNode struct {
 	Obfs     string `json:"obfs"`
 }
 
+func (n *HysteriaNode) GetCommonNode() *CommonNode {
+	return &n.CommonNode
+}
+
 type Hysteria2Node struct {
 	CommonNode
 	Ignore_Client_Bandwidth bool   `json:"ignore_client_bandwidth"`
@@ -146,6 +179,10 @@ type Hysteria2Node struct {
 	DownMbps                int    `json:"down_mbps"`
 	ObfsType                string `json:"obfs"`
 	ObfsPassword            string `json:"obfs-password"`
+}
+
+func (n *Hysteria2Node) GetCommonNode() *CommonNode {
+	return &n.CommonNode
 }
 
 type RawDNS struct {
