@@ -13,6 +13,18 @@ const (
 	Reality = 2
 )
 
+// Node types
+const (
+	Shadowsocks = "shadowsocks"
+	Trojan      = "trojan"
+	Vmess       = "vmess"
+	Vless       = "vless"
+	Tuic        = "tuic"
+	Hysteria    = "hysteria"
+	Hysteria2   = "hysteria2"
+	AnyTls      = "anytls"
+)
+
 type NodeInfo struct {
 	Id           int
 	Type         string
