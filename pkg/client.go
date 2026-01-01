@@ -52,6 +52,7 @@ type Client struct {
 	responseBodyHash string
 	UserList         *UserListBody
 	AliveMap         *AliveMap
+	handlers         map[string]NodeHandler
 }
 
 // New creat a api instance
@@ -111,6 +112,16 @@ func New(c *Config) *Client {
 		NodeId:    c.NodeID,
 		UserList:  &UserListBody{},
 		AliveMap:  &AliveMap{},
+		handlers: map[string]NodeHandler{
+			Shadowsocks: &ShadowsocksHandler{},
+			Vmess:       &VMessHandler{},
+			Vless:       &VlessHandler{},
+			Trojan:      &TrojanHandler{},
+			Tuic:        &TuicHandler{},
+			AnyTls:      &AnyTlsHandler{},
+			Hysteria:    &HysteriaHandler{},
+			Hysteria2:   &Hysteria2Handler{},
+		},
 	}
 }
 
@@ -180,65 +191,10 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 	}
 
 	var cm *CommonNode
-	switch c.NodeType {
-	case "vmess":
-		node.VMess, cm, err = parseNodeWithCommon[VMessNode](r.Body())
-		if err == nil {
-			// Handle legacy field mapping for VMess
-			if len(node.VMess.NetworkSettingsBack) > 0 {
-				node.VMess.NetworkSettings = node.VMess.NetworkSettingsBack
-				node.VMess.NetworkSettingsBack = nil
-			}
-			if node.VMess.TlsSettingsBack != nil {
-				node.VMess.TlsSettings = *node.VMess.TlsSettingsBack
-				node.VMess.TlsSettingsBack = nil
-			}
-			node.Security = node.VMess.Tls
-		}
-	case "vless":
-		node.Vless, cm, err = parseNodeWithCommon[VlessNode](r.Body())
-		if err == nil {
-			// Handle legacy field mapping for VLESS
-			if len(node.Vless.NetworkSettingsBack) > 0 {
-				node.Vless.NetworkSettings = node.Vless.NetworkSettingsBack
-				node.Vless.NetworkSettingsBack = nil
-			}
-			if node.Vless.TlsSettingsBack != nil {
-				node.Vless.TlsSettings = *node.Vless.TlsSettingsBack
-				node.Vless.TlsSettingsBack = nil
-			}
-			node.Security = node.Vless.Tls
-		}
-	case "shadowsocks":
-		node.Shadowsocks, cm, err = parseNodeWithCommon[ShadowsocksNode](r.Body())
-		if err == nil {
-			node.Security = None
-		}
-	case "trojan":
-		node.Trojan, cm, err = parseNodeWithCommon[TrojanNode](r.Body())
-		if err == nil {
-			node.Security = Tls
-		}
-	case "tuic":
-		node.Tuic, cm, err = parseNodeWithCommon[TuicNode](r.Body())
-		if err == nil {
-			node.Security = Tls
-		}
-	case "anytls":
-		node.AnyTls, cm, err = parseNodeWithCommon[AnyTlsNode](r.Body())
-		if err == nil {
-			node.Security = Tls
-		}
-	case "hysteria":
-		node.Hysteria, cm, err = parseNodeWithCommon[HysteriaNode](r.Body())
-		if err == nil {
-			node.Security = Tls
-		}
-	case "hysteria2":
-		node.Hysteria2, cm, err = parseNodeWithCommon[Hysteria2Node](r.Body())
-		if err == nil {
-			node.Security = Tls
-		}
+	if handler, ok := c.handlers[c.NodeType]; ok {
+		cm, err = handler.ParseConfig(node, r.Body())
+	} else {
+		return nil, fmt.Errorf("unsupported node type: %s", c.NodeType)
 	}
 
 	if err != nil {
@@ -246,59 +202,8 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 	}
 
 	// parse rules and dns
-	if cm != nil {
-		for i := range cm.Routes {
-			var matchs []string
-			if _, ok := cm.Routes[i].Match.(string); ok {
-				matchs = strings.Split(cm.Routes[i].Match.(string), ",")
-			} else if _, ok = cm.Routes[i].Match.([]string); ok {
-				matchs = cm.Routes[i].Match.([]string)
-			} else {
-				// Handle []interface{} case if needed
-				if temp, ok := cm.Routes[i].Match.([]interface{}); ok {
-					matchs = make([]string, len(temp))
-					for j := range temp {
-						if str, ok := temp[j].(string); ok {
-							matchs[j] = str
-						}
-					}
-				}
-			}
-			switch cm.Routes[i].Action {
-			case "block":
-				for _, v := range matchs {
-					if strings.HasPrefix(v, "protocol:") {
-						node.Rules.Protocol = append(node.Rules.Protocol, strings.TrimPrefix(v, "protocol:"))
-					} else {
-						node.Rules.Regexp = append(node.Rules.Regexp, strings.TrimPrefix(v, "regexp:"))
-					}
-				}
-			case "dns":
-				var domains []string
-				domains = append(domains, matchs...)
-				if len(matchs) > 0 && matchs[0] != "main" {
-					node.RawDNS.DNSMap[strconv.Itoa(i)] = map[string]interface{}{
-						"address": cm.Routes[i].ActionValue,
-						"domains": domains,
-					}
-				} else if len(matchs) > 1 {
-					dns := []byte(strings.Join(matchs[1:], ""))
-					node.RawDNS.DNSJson = dns
-				}
-			}
-		}
-
-		// set interval
-		if cm.BaseConfig != nil {
-			node.PushInterval = IntervalToTime(cm.BaseConfig.PushInterval)
-			node.PullInterval = IntervalToTime(cm.BaseConfig.PullInterval)
-		}
-
-		node.Common = cm
-		// Clear fields to save memory if needed
-		cm.Routes = nil
-		cm.BaseConfig = nil
-	}
+	// parse rules and dns
+	node.ProcessCommonNode(cm)
 
 	return node, nil
 }
@@ -368,47 +273,4 @@ func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]strin
 		Post(apiAlivePath)
 
 	return c.checkResponse(r, apiAlivePath, err)
-}
-
-func parseNodeWithCommon[T any](data []byte) (*T, *CommonNode, error) {
-	var node T
-	if err := json.Unmarshal(data, &node); err != nil {
-		return nil, nil, err
-	}
-	// Use reflection to extract CommonNode field since Go generics don't support struct field access directly without interface
-	// Ideally structs should implement an interface, but for now we assume structure match.
-	// Actually, since we are inside the package, we know the structure.
-	// But we need to return *CommonNode.
-	// Let's use a simpler approach: define an interface or just use reflection here as it happens once per config update (rare).
-	// Better yet, since all node types embed CommonNode, we can cast if we define an interface.
-
-	// A faster way without reflection for known types:
-	// We already reformatted the switch case to handle this.
-	// But wait, I need to extract CommonNode from T.
-
-	// Let's rely on the caller to do the assignment or use reflection carefully.
-	// Since all node types have CommonNode as first field (embedded), we can unsafe pointer cast or reflection.
-	// Safe way for now: return T and let caller handle.
-	// But the caller block was designed to be generic.
-
-	// Actually, let's keep it simple. We will return the Typed struct and the CommonNode.
-	// Since we can't easily interface the field access generically in Go 1.20 without methods.
-
-	// Use polymorphic interface to get CommonNode
-	// We need to type assert the POINTER to the struct to the Node interface
-	// because the methods are defined on the pointer receiver (*T).
-	// Since 'node' is type T (the struct), '&node' is *T.
-
-	var cm *CommonNode
-	if n, ok := any(&node).(Node); ok {
-		cm = n.GetCommonNode()
-	} else {
-		// This should theoretically not happen if T is one of the supported types that implement Node
-		// But if T is a new type that doesn't implement Node, we should probably error or just return nil common
-		// For strictness, let's keep it as is or return error?
-		// With current usage, all cases are covered.
-		// If casting fails, cm remains nil.
-	}
-
-	return &node, cm, nil
 }

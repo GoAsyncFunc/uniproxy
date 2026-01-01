@@ -3,6 +3,7 @@ package pkg
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -246,4 +247,63 @@ func IntervalToTime(i interface{}) time.Duration {
 		return time.Duration(v) * time.Second
 	}
 	return 0
+}
+
+// ProcessCommonNode handles the common node configuration like routes and DNS.
+func (node *NodeInfo) ProcessCommonNode(cm *CommonNode) {
+	if cm == nil {
+		return
+	}
+
+	for i := range cm.Routes {
+		var matchs []string
+		if _, ok := cm.Routes[i].Match.(string); ok {
+			matchs = strings.Split(cm.Routes[i].Match.(string), ",")
+		} else if _, ok = cm.Routes[i].Match.([]string); ok {
+			matchs = cm.Routes[i].Match.([]string)
+		} else {
+			// Handle []interface{} case if needed
+			if temp, ok := cm.Routes[i].Match.([]interface{}); ok {
+				matchs = make([]string, len(temp))
+				for j := range temp {
+					if str, ok := temp[j].(string); ok {
+						matchs[j] = str
+					}
+				}
+			}
+		}
+		switch cm.Routes[i].Action {
+		case "block":
+			for _, v := range matchs {
+				if strings.HasPrefix(v, "protocol:") {
+					node.Rules.Protocol = append(node.Rules.Protocol, strings.TrimPrefix(v, "protocol:"))
+				} else {
+					node.Rules.Regexp = append(node.Rules.Regexp, strings.TrimPrefix(v, "regexp:"))
+				}
+			}
+		case "dns":
+			var domains []string
+			domains = append(domains, matchs...)
+			if len(matchs) > 0 && matchs[0] != "main" {
+				node.RawDNS.DNSMap[strconv.Itoa(i)] = map[string]interface{}{
+					"address": cm.Routes[i].ActionValue,
+					"domains": domains,
+				}
+			} else if len(matchs) > 1 {
+				dns := []byte(strings.Join(matchs[1:], ""))
+				node.RawDNS.DNSJson = dns
+			}
+		}
+	}
+
+	// set interval
+	if cm.BaseConfig != nil {
+		node.PushInterval = IntervalToTime(cm.BaseConfig.PushInterval)
+		node.PullInterval = IntervalToTime(cm.BaseConfig.PullInterval)
+	}
+
+	node.Common = cm
+	// Clear fields to save memory if needed
+	cm.Routes = nil
+	cm.BaseConfig = nil
 }
