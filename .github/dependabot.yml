@@ -3,15 +3,10 @@ updates:
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
-      interval: "weekly"
-    target-branch: "dev/master"
-    commit-message:
-      prefix: "chore(deps)"
-
+      interval: "daily"
+    open-pull-requests-limit: 10
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-    target-branch: "dev/master"
-    commit-message:
-      prefix: "chore(deps)"
+      interval: "daily"
+    open-pull-requests-limit: 10
