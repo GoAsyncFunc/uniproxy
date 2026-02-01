@@ -14,10 +14,10 @@ func TestClient_Concurrency(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/server/UniProxy/config":
 			w.Header().Set("ETag", "123")
-			w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))
+			_, _ = w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))
 		case "/api/v1/server/UniProxy/user":
 			w.Header().Set("ETag", "456")
-			w.Write([]byte(`{"users": [{"id": 1, "uuid": "test-uuid"}]}`))
+			_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "test-uuid"}]}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
