@@ -74,15 +74,13 @@ type BaseConfig struct {
 // VMessNode is vmess node info
 type VMessNode struct {
 	CommonNode
-	Tls                 int             `json:"tls"`
-	TlsSettings         TlsSettings     `json:"tls_settings"`
-	TlsSettingsBack     *TlsSettings    `json:"tlsSettings"`
-	Network             string          `json:"network"`
-	NetworkSettings     json.RawMessage `json:"network_settings"`
-	NetworkSettingsBack json.RawMessage `json:"networkSettings"`
-	Encryption          string          `json:"encryption"`
-	EncryptionSettings  EncSettings     `json:"encryption_settings"`
-	ServerName          string          `json:"server_name"`
+	Tls                int             `json:"tls"`
+	TlsSettings        TlsSettings     `json:"tls_settings"`
+	Network            string          `json:"network"`
+	NetworkSettings    json.RawMessage `json:"network_settings"`
+	Encryption         string          `json:"encryption"`
+	EncryptionSettings EncSettings     `json:"encryption_settings"`
+	ServerName         string          `json:"server_name"`
 }
 
 func (n *VMessNode) GetCommonNode() *CommonNode {
@@ -92,17 +90,15 @@ func (n *VMessNode) GetCommonNode() *CommonNode {
 // VlessNode is vless node info
 type VlessNode struct {
 	CommonNode
-	Tls                 int             `json:"tls"`
-	TlsSettings         TlsSettings     `json:"tls_settings"`
-	TlsSettingsBack     *TlsSettings    `json:"tlsSettings"`
-	Network             string          `json:"network"`
-	NetworkSettings     json.RawMessage `json:"network_settings"`
-	NetworkSettingsBack json.RawMessage `json:"networkSettings"`
-	Encryption          string          `json:"encryption"`
-	EncryptionSettings  EncSettings     `json:"encryption_settings"`
-	ServerName          string          `json:"server_name"`
-	Flow                string          `json:"flow"`
-	RealityConfig       RealityConfig   `json:"-"`
+	Tls                int             `json:"tls"`
+	TlsSettings        TlsSettings     `json:"tls_settings"`
+	Network            string          `json:"network"`
+	NetworkSettings    json.RawMessage `json:"network_settings"`
+	Encryption         string          `json:"encryption"`
+	EncryptionSettings EncSettings     `json:"encryption_settings"`
+	ServerName         string          `json:"server_name"`
+	Flow               string          `json:"flow"`
+	RealityConfig      RealityConfig   `json:"-"`
 }
 
 func (n *VlessNode) GetCommonNode() *CommonNode {

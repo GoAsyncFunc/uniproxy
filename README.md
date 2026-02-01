@@ -4,7 +4,7 @@ A lightweight, robust Go client for the UniProxy API.
 
 ## Features
 
-- **Node Configuration**: Fetch configurations for VMess, VLESS, Trojan, Shadowsocks, Hysteria, Hysteria2, Tuic, and more.
+- **Node Configuration**: Fetch configurations for VMess, VLESS, Trojan, Shadowsocks, Hysteria, Hysteria2, Tuic, AnyTLS, and more.
 - **User Synchronization**: Efficiently retrieve and manage user lists.
 - **Traffic Reporting**: Reliable user traffic usage reporting.
 - **Health Checks**: Report node online status.

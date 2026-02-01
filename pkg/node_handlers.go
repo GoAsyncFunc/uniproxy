@@ -13,15 +13,6 @@ func (h *VMessHandler) ParseConfig(info *NodeInfo, data []byte) (*CommonNode, er
 	if err := json.Unmarshal(data, &node); err != nil {
 		return nil, fmt.Errorf("decode vmess params error: %w", err)
 	}
-	// Handling legacy fields logic that was in client.go
-	if len(node.NetworkSettingsBack) > 0 {
-		node.NetworkSettings = node.NetworkSettingsBack
-		node.NetworkSettingsBack = nil
-	}
-	if node.TlsSettingsBack != nil {
-		node.TlsSettings = *node.TlsSettingsBack
-		node.TlsSettingsBack = nil
-	}
 
 	info.VMess = &node
 	info.Security = node.Tls
@@ -36,15 +27,6 @@ func (h *VlessHandler) ParseConfig(info *NodeInfo, data []byte) (*CommonNode, er
 	var node VlessNode
 	if err := json.Unmarshal(data, &node); err != nil {
 		return nil, fmt.Errorf("decode vless params error: %w", err)
-	}
-	// Handling legacy fields logic
-	if len(node.NetworkSettingsBack) > 0 {
-		node.NetworkSettings = node.NetworkSettingsBack
-		node.NetworkSettingsBack = nil
-	}
-	if node.TlsSettingsBack != nil {
-		node.TlsSettings = *node.TlsSettingsBack
-		node.TlsSettingsBack = nil
 	}
 
 	info.Vless = &node
