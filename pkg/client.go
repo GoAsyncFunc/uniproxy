@@ -46,7 +46,8 @@ type Client struct {
 	Token            string
 	NodeType         string
 	NodeId           int
-	mu               sync.RWMutex // Protects mutable state
+	nodeMu           sync.Mutex
+	userMu           sync.Mutex
 	nodeEtag         string
 	userEtag         string
 	responseBodyHash string
@@ -89,7 +90,6 @@ func New(c *Config) *Client {
 		nodeType = "vmess"
 	case "vmess", "trojan", "shadowsocks", "hysteria", "hysteria2", "tuic", "anytls", "vless":
 	default:
-		// Just log warning, allow proceeding if it's a new type
 		log.Warnf("Unknown Node type: %s", nodeType)
 	}
 
@@ -132,53 +132,54 @@ func (c *Client) Debug(enable bool) {
 
 func (c *Client) checkResponse(r *resty.Response, path string, err error) error {
 	if err != nil {
-		return fmt.Errorf("request %s failed: %w", path, err)
+		return NewNetworkError(fmt.Sprintf("request %s failed", path), path, err)
 	}
 	if r.StatusCode() >= 400 {
-		return fmt.Errorf("request %s failed with status: %d, body: %s", path, r.StatusCode(), string(r.Body()))
+		return NewAPIErrorFromStatusCode(
+			r.StatusCode(),
+			string(r.Body()),
+			path,
+			nil,
+		)
 	}
 	return nil
 }
 
 func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
-	c.mu.RLock()
-	currentEtag := c.nodeEtag
-	currentBodyHash := c.responseBodyHash
-	c.mu.RUnlock()
+	c.nodeMu.Lock()
+	defer c.nodeMu.Unlock()
 
 	r, err := c.client.
 		R().
 		SetContext(ctx).
-		SetHeader(headerIfNoneMatch, currentEtag).
+		SetHeader(headerIfNoneMatch, c.nodeEtag).
 		ForceContentType(contentTypeJSON).
 		Get(apiConfigPath)
 
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, NewNetworkError("request failed", apiConfigPath, err)
 	}
 
 	if r.StatusCode() == 304 {
 		return nil, nil
 	}
-	hash := sha256.Sum256(r.Body())
-	newBodyHash := hex.EncodeToString(hash[:])
 
-	if currentBodyHash == newBodyHash {
-		return nil, nil
-	}
-
-	// Lock for writing updates
-	c.mu.Lock()
-	c.responseBodyHash = newBodyHash
-	c.nodeEtag = r.Header().Get(headerETag)
-	c.mu.Unlock()
-
-	if err = c.checkResponse(r, apiConfigPath, err); err != nil {
+	if err = c.checkResponse(r, apiConfigPath, nil); err != nil {
 		return nil, err
 	}
 
-	if r == nil || r.Body() == nil {
-		return nil, fmt.Errorf("received nil response")
+	hash := sha256.Sum256(r.Body())
+	newBodyHash := hex.EncodeToString(hash[:])
+
+	if c.responseBodyHash == newBodyHash {
+		return nil, nil
+	}
+
+	c.responseBodyHash = newBodyHash
+	c.nodeEtag = r.Header().Get(headerETag)
+
+	if r.Body() == nil {
+		return nil, NewNetworkError("received nil response body", apiConfigPath, nil)
 	}
 
 	node = &NodeInfo{
@@ -194,15 +195,13 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 	if handler, ok := c.handlers[c.NodeType]; ok {
 		cm, err = handler.ParseConfig(node, r.Body())
 	} else {
-		return nil, fmt.Errorf("unsupported node type: %s", c.NodeType)
+		return nil, NewParseError(fmt.Sprintf("unsupported node type: %s", c.NodeType), nil)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("decode %s params error: %w", c.NodeType, err)
+		return nil, NewParseError(fmt.Sprintf("decode %s params error", c.NodeType), err)
 	}
 
-	// parse rules and dns
-	// parse rules and dns
 	node.ProcessCommonNode(cm)
 
 	return node, nil
@@ -210,47 +209,41 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 
 // GetUserList will pull user from v2board
 func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
-	c.mu.RLock()
-	currentEtag := c.userEtag
-	c.mu.RUnlock()
+	c.userMu.Lock()
+	defer c.userMu.Unlock()
 
 	r, err := c.client.R().
 		SetContext(ctx).
-		SetHeader(headerIfNoneMatch, currentEtag).
+		SetHeader(headerIfNoneMatch, c.userEtag).
 		ForceContentType(contentTypeJSON).
 		Get(apiUserPath)
 
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, NewNetworkError("request failed", apiUserPath, err)
 	}
 
 	if r.StatusCode() == 304 {
-		c.mu.RLock()
-		defer c.mu.RUnlock()
 		if c.UserList != nil {
 			return c.UserList.Users, nil
 		}
-		return nil, nil // Should not happen if etag matches, but handle gracefully
+		return nil, nil
 	}
 
-	if err = c.checkResponse(r, apiUserPath, err); err != nil {
+	if err = c.checkResponse(r, apiUserPath, nil); err != nil {
 		return nil, err
 	}
 
 	userlist := &UserListBody{}
 	if err := json.Unmarshal(r.Body(), userlist); err != nil {
-		return nil, fmt.Errorf("decode user list error: %w", err)
+		return nil, NewParseError("decode user list error", err)
 	}
 
-	c.mu.Lock()
 	c.userEtag = r.Header().Get(headerETag)
 	c.UserList = userlist
-	c.mu.Unlock()
 
 	return userlist.Users, nil
 }
 
-// Upload/Download are type int64 in UserTraffic struct in model.go
 func (c *Client) ReportUserTraffic(ctx context.Context, userTraffic []UserTraffic) error {
 	data := make(map[int][]int64, len(userTraffic))
 	for i := range userTraffic {
