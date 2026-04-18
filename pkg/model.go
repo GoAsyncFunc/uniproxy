@@ -77,10 +77,9 @@ type VMessNode struct {
 	Tls                int             `json:"tls"`
 	TlsSettings        TlsSettings     `json:"tls_settings"`
 	Network            string          `json:"network"`
-	NetworkSettings    json.RawMessage `json:"network_settings"`
+	NetworkSettings    json.RawMessage `json:"networkSettings"`
 	Encryption         string          `json:"encryption"`
 	EncryptionSettings EncSettings     `json:"encryption_settings"`
-	ServerName         string          `json:"server_name"`
 }
 
 func (n *VMessNode) GetCommonNode() *CommonNode {
@@ -93,10 +92,9 @@ type VlessNode struct {
 	Tls                int             `json:"tls"`
 	TlsSettings        TlsSettings     `json:"tls_settings"`
 	Network            string          `json:"network"`
-	NetworkSettings    json.RawMessage `json:"network_settings"`
+	NetworkSettings    json.RawMessage `json:"networkSettings"`
 	Encryption         string          `json:"encryption"`
 	EncryptionSettings EncSettings     `json:"encryption_settings"`
-	ServerName         string          `json:"server_name"`
 	Flow               string          `json:"flow"`
 	RealityConfig      RealityConfig   `json:"-"`
 }
