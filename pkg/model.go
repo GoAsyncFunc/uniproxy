@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // Security type
@@ -170,6 +172,7 @@ func (n *AnyTlsNode) GetCommonNode() *CommonNode {
 
 type HysteriaNode struct {
 	CommonNode
+	Version  int    `json:"version"`
 	UpMbps   int    `json:"up_mbps"`
 	DownMbps int    `json:"down_mbps"`
 	Obfs     string `json:"obfs"`
@@ -181,7 +184,8 @@ func (n *HysteriaNode) GetCommonNode() *CommonNode {
 
 type Hysteria2Node struct {
 	CommonNode
-	Ignore_Client_Bandwidth bool   `json:"ignore_client_bandwidth"`
+	Version               int    `json:"version"`
+	IgnoreClientBandwidth bool   `json:"ignore_client_bandwidth"`
 	UpMbps                  int    `json:"up_mbps"`
 	DownMbps                int    `json:"down_mbps"`
 	ObfsType                string `json:"obfs"`
@@ -219,10 +223,6 @@ type UserListBody struct {
 	Users []UserInfo `json:"users"`
 }
 
-type AliveMap struct {
-	Alive map[int]int `json:"alive"`
-}
-
 type UserTraffic struct {
 	UID      int
 	Upload   int64
@@ -235,7 +235,11 @@ func IntervalToTime(i interface{}) time.Duration {
 	case int:
 		return time.Duration(v) * time.Second
 	case string:
-		val, _ := strconv.Atoi(v)
+		val, err := strconv.Atoi(v)
+		if err != nil {
+			log.Warnf("IntervalToTime: invalid string value %q: %v", v, err)
+			return 0
+		}
 		return time.Duration(val) * time.Second
 	case float64:
 		return time.Duration(v) * time.Second
