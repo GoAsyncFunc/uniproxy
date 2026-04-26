@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,19 @@ const (
 	contentTypeJSON   = "application/json"
 )
 
+func ipv4FirstTransport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dialer.DialContext(ctx, "tcp4", address)
+		if err == nil {
+			return conn, nil
+		}
+		return dialer.DialContext(ctx, network, address)
+	}
+	return transport
+}
+
 // Client APIClient create a api client to the panel.
 type Client struct {
 	client           *resty.Client
@@ -65,6 +79,7 @@ func New(c *Config) *Client {
 		})
 	} else {
 		client = resty.New()
+		client.SetTransport(ipv4FirstTransport())
 	}
 
 	client.SetRetryCount(3)

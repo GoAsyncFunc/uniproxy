@@ -34,6 +34,7 @@ type NodeInfo struct {
 	PullInterval time.Duration
 	RawDNS       RawDNS
 	Rules        Rules
+	Routes       []Route
 
 	// origin
 	VMess       *VMessNode
@@ -60,12 +61,50 @@ type Node interface {
 	GetCommonNode() *CommonNode
 }
 
+const (
+	RouteActionBlock      = "block"
+	RouteActionBlockIP    = "block_ip"
+	RouteActionBlockPort  = "block_port"
+	RouteActionProtocol   = "protocol"
+	RouteActionDNS        = "dns"
+	RouteActionRoute      = "route"
+	RouteActionRouteIP    = "route_ip"
+	RouteActionDefaultOut = "default_out"
+)
+
 type Route struct {
 	Id          int         `json:"id"`
 	Match       interface{} `json:"match"`
 	Action      string      `json:"action"`
 	ActionValue string      `json:"action_value"`
 }
+
+func (r Route) Matches() []string {
+	return NormalizeRouteMatch(r.Match)
+}
+
+func IsBlockRouteAction(action string) bool {
+	switch action {
+	case RouteActionBlock, RouteActionBlockIP, RouteActionBlockPort, RouteActionProtocol:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsCustomRouteAction(action string) bool {
+	switch action {
+	case RouteActionRoute, RouteActionRouteIP:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsDefaultOutboundRouteAction(action string) bool {
+	return action == RouteActionDefaultOut
+}
+
 type BaseConfig struct {
 	PushInterval any `json:"push_interval"`
 	PullInterval any `json:"pull_interval"`
@@ -243,39 +282,72 @@ func IntervalToTime(i interface{}) time.Duration {
 	return 0
 }
 
+func NormalizeRouteMatch(match interface{}) []string {
+	var raw []string
+	switch v := match.(type) {
+	case string:
+		raw = strings.Split(v, ",")
+	case []string:
+		raw = v
+	case []interface{}:
+		raw = make([]string, 0, len(v))
+		for _, item := range v {
+			if str, ok := item.(string); ok {
+				raw = append(raw, str)
+			}
+		}
+	}
+	return TrimRouteValues(raw)
+}
+
+func TrimRouteValues(values []string) []string {
+	trimmed := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			trimmed = append(trimmed, value)
+		}
+	}
+	return trimmed
+}
+
+func SplitBlockRouteMatches(matches []string) ([]string, []string) {
+	domains := make([]string, 0, len(matches))
+	protocols := []string{}
+	for _, match := range matches {
+		match = strings.TrimSpace(match)
+		if match == "" {
+			continue
+		}
+		if protocol, ok := strings.CutPrefix(match, "protocol:"); ok {
+			protocol = strings.TrimSpace(protocol)
+			if protocol != "" {
+				protocols = append(protocols, protocol)
+			}
+		} else {
+			domains = append(domains, match)
+		}
+	}
+	return domains, protocols
+}
+
 // ProcessCommonNode handles the common node configuration like routes and DNS.
 func (node *NodeInfo) ProcessCommonNode(cm *CommonNode) {
 	if cm == nil {
 		return
 	}
 
+	node.Routes = append([]Route(nil), cm.Routes...)
 	for i := range cm.Routes {
-		var matchs []string
-		if _, ok := cm.Routes[i].Match.(string); ok {
-			matchs = strings.Split(cm.Routes[i].Match.(string), ",")
-		} else if _, ok = cm.Routes[i].Match.([]string); ok {
-			matchs = cm.Routes[i].Match.([]string)
-		} else {
-			// Handle []interface{} case if needed
-			if temp, ok := cm.Routes[i].Match.([]interface{}); ok {
-				matchs = make([]string, len(temp))
-				for j := range temp {
-					if str, ok := temp[j].(string); ok {
-						matchs[j] = str
-					}
-				}
-			}
-		}
+		matchs := cm.Routes[i].Matches()
 		switch cm.Routes[i].Action {
-		case "block":
-			for _, v := range matchs {
-				if strings.HasPrefix(v, "protocol:") {
-					node.Rules.Protocol = append(node.Rules.Protocol, strings.TrimPrefix(v, "protocol:"))
-				} else {
-					node.Rules.Regexp = append(node.Rules.Regexp, strings.TrimPrefix(v, "regexp:"))
-				}
+		case RouteActionBlock:
+			domains, protocols := SplitBlockRouteMatches(matchs)
+			for _, v := range domains {
+				node.Rules.Regexp = append(node.Rules.Regexp, strings.TrimPrefix(v, "regexp:"))
 			}
-		case "dns":
+			node.Rules.Protocol = append(node.Rules.Protocol, protocols...)
+		case RouteActionDNS:
 			var domains []string
 			domains = append(domains, matchs...)
 			if len(matchs) > 0 && matchs[0] != "main" {
