@@ -34,6 +34,7 @@ const (
 	apiUserPath       = "/api/v1/server/UniProxy/user"
 	apiPushPath       = "/api/v1/server/UniProxy/push"
 	apiAlivePath      = "/api/v1/server/UniProxy/alive"
+	apiAliveListPath  = "/api/v1/server/UniProxy/alivelist"
 	headerIfNoneMatch = "If-None-Match"
 	headerETag        = "ETag"
 	contentTypeJSON   = "application/json"
@@ -65,8 +66,8 @@ type Client struct {
 	nodeEtag         string
 	userEtag         string
 	responseBodyHash string
+	userBodyHash     string
 	UserList         *UserListBody
-	AliveMap         *AliveMap
 	handlers         map[string]NodeHandler
 }
 
@@ -126,7 +127,6 @@ func New(c *Config) *Client {
 		NodeType:  nodeType,
 		NodeId:    c.NodeID,
 		UserList:  &UserListBody{},
-		AliveMap:  &AliveMap{},
 		handlers: map[string]NodeHandler{
 			Shadowsocks: &ShadowsocksHandler{},
 			Vmess:       &VMessHandler{},
@@ -248,12 +248,22 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 		return nil, err
 	}
 
+	hash := sha256.Sum256(r.Body())
+	newHash := hex.EncodeToString(hash[:])
+	if c.userBodyHash == newHash {
+		if c.UserList != nil {
+			return c.UserList.Users, nil
+		}
+		return nil, nil
+	}
+
 	userlist := &UserListBody{}
 	if err := json.Unmarshal(r.Body(), userlist); err != nil {
 		return nil, NewParseError("decode user list error", err)
 	}
 
 	c.userEtag = r.Header().Get(headerETag)
+	c.userBodyHash = newHash
 	c.UserList = userlist
 
 	return userlist.Users, nil
@@ -281,4 +291,28 @@ func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]strin
 		Post(apiAlivePath)
 
 	return c.checkResponse(r, apiAlivePath, err)
+}
+
+func (c *Client) GetAliveList(ctx context.Context) (map[int]int, error) {
+	r, err := c.client.R().
+		SetContext(ctx).
+		ForceContentType(contentTypeJSON).
+		Get(apiAliveListPath)
+
+	if err != nil {
+		return nil, NewNetworkError("request failed", apiAliveListPath, err)
+	}
+
+	if err = c.checkResponse(r, apiAliveListPath, nil); err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Alive map[int]int `json:"alive"`
+	}
+	if err := json.Unmarshal(r.Body(), &resp); err != nil {
+		return nil, NewParseError("decode alive list error", err)
+	}
+
+	return resp.Alive, nil
 }
