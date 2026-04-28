@@ -24,27 +24,37 @@ go get github.com/GoAsyncFunc/uniproxy
 package main
 
 import (
+	"context"
 	"log"
+
 	"github.com/GoAsyncFunc/uniproxy/pkg"
 )
 
 func main() {
-	client := pkg.New(&pkg.Config{
+	ctx := context.Background()
+
+	client, err := pkg.NewWithError(&pkg.Config{
 		APIHost:  "https://api.example.com",
 		Key:      "your-node-token",
 		NodeID:   1,
 		NodeType: "hysteria2", // vmess, vless, trojan, etc.
 		Timeout:  10,
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	// Use client...
+	_ = ctx
+	_ = client
 }
 ```
+
+`pkg.New` remains available for compatibility when the configuration has already been validated.
 
 ### 2. Fetch Node Config
 
 ```go
-config, err := client.GetNodeInfo()
+config, err := client.GetNodeInfo(ctx)
 if err != nil {
 	log.Fatal(err)
 }
@@ -58,22 +68,44 @@ if config != nil {
 ### 3. Sync Users
 
 ```go
-users, err := client.GetUserList()
+users, err := client.GetUserList(ctx)
 if err != nil {
 	log.Fatal(err)
 }
 log.Printf("Synced %d users", len(users))
+
+cachedUsers := client.CachedUserList() // returns a copy
+log.Printf("Cached %d users", len(cachedUsers))
 ```
+
+`GetUserList` returns a copy of cached users, so callers can mutate the returned slice without changing the client's internal cache.
 
 ### 4. Report Traffic
 
 ```go
-err := client.ReportUserTraffic([]pkg.UserTraffic{
+err := client.ReportUserTraffic(ctx, []pkg.UserTraffic{
 	{UID: 1, Upload: 1024, Download: 2048},
 })
 if err != nil {
 	log.Printf("Report failed: %v", err)
 }
+```
+
+### 5. Report Online Users and Fetch Alive Counts
+
+```go
+err := client.ReportNodeOnlineUsers(ctx, map[int][]string{
+	1: {"203.0.113.1_1", "203.0.113.2_1"},
+})
+if err != nil {
+	log.Printf("Online report failed: %v", err)
+}
+
+alive, err := client.GetAliveList(ctx)
+if err != nil {
+	log.Printf("Alive list fetch failed: %v", err)
+}
+log.Printf("Alive counts: %+v", alive)
 ```
 
 ## License

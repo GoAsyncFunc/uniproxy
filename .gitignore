@@ -19,3 +19,4 @@ cmd/server/server
 # AI assistant files
 CLAUDE.md
 .claude/
+.worktrees/
