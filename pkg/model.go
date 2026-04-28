@@ -225,10 +225,10 @@ type Hysteria2Node struct {
 	CommonNode
 	Version               int    `json:"version"`
 	IgnoreClientBandwidth bool   `json:"ignore_client_bandwidth"`
-	UpMbps                  int    `json:"up_mbps"`
-	DownMbps                int    `json:"down_mbps"`
-	ObfsType                string `json:"obfs"`
-	ObfsPassword            string `json:"obfs-password"`
+	UpMbps                int    `json:"up_mbps"`
+	DownMbps              int    `json:"down_mbps"`
+	ObfsType              string `json:"obfs"`
+	ObfsPassword          string `json:"obfs-password"`
 }
 
 func (n *Hysteria2Node) GetCommonNode() *CommonNode {
@@ -268,20 +268,27 @@ type UserTraffic struct {
 	Download int64
 }
 
+func intervalSeconds(value int) time.Duration {
+	if value <= 0 {
+		return 0
+	}
+	return time.Duration(value) * time.Second
+}
+
 // Helper function to convert dynamic interval types to time.Duration
 func IntervalToTime(i interface{}) time.Duration {
 	switch v := i.(type) {
 	case int:
-		return time.Duration(v) * time.Second
+		return intervalSeconds(v)
 	case string:
-		val, err := strconv.Atoi(v)
+		val, err := strconv.Atoi(strings.TrimSpace(v))
 		if err != nil {
 			log.Warnf("IntervalToTime: invalid string value %q: %v", v, err)
 			return 0
 		}
-		return time.Duration(val) * time.Second
+		return intervalSeconds(val)
 	case float64:
-		return time.Duration(v) * time.Second
+		return intervalSeconds(int(v))
 	}
 	return 0
 }
@@ -343,24 +350,27 @@ func (node *NodeInfo) ProcessCommonNode(cm *CommonNode) {
 
 	node.Routes = append([]Route(nil), cm.Routes...)
 	for i := range cm.Routes {
-		matchs := cm.Routes[i].Matches()
+		matches := cm.Routes[i].Matches()
 		switch cm.Routes[i].Action {
 		case RouteActionBlock:
-			domains, protocols := SplitBlockRouteMatches(matchs)
+			domains, protocols := SplitBlockRouteMatches(matches)
 			for _, v := range domains {
 				node.Rules.Regexp = append(node.Rules.Regexp, strings.TrimPrefix(v, "regexp:"))
 			}
 			node.Rules.Protocol = append(node.Rules.Protocol, protocols...)
 		case RouteActionDNS:
 			var domains []string
-			domains = append(domains, matchs...)
-			if len(matchs) > 0 && matchs[0] != "main" {
+			domains = append(domains, matches...)
+			if len(matches) > 0 && matches[0] != "main" {
+				if node.RawDNS.DNSMap == nil {
+					node.RawDNS.DNSMap = make(map[string]map[string]interface{})
+				}
 				node.RawDNS.DNSMap[strconv.Itoa(i)] = map[string]interface{}{
 					"address": cm.Routes[i].ActionValue,
 					"domains": domains,
 				}
-			} else if len(matchs) > 1 {
-				dns := []byte(strings.Join(matchs[1:], ""))
+			} else if len(matches) > 1 {
+				dns := []byte(strings.Join(matches[1:], ""))
 				node.RawDNS.DNSJson = dns
 			}
 		}

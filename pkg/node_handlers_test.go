@@ -1,6 +1,7 @@
 package pkg
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,172 @@ func TestVlessHandler_v2boardFormat(t *testing.T) {
 
 // TestVMessHandler_v2boardFormat verifies v2board's UniProxyController VMess response
 // also uses camelCase "networkSettings". See UniProxyController.php line 200.
+func TestNodeHandlers_ParseProtocolConfigs(t *testing.T) {
+	tests := []struct {
+		name          string
+		handler       NodeHandler
+		body          string
+		wantSecurity  int
+		wantPort      int
+		assertInfoSet func(*testing.T, *NodeInfo)
+	}{
+		{
+			name:         "shadowsocks",
+			handler:      &ShadowsocksHandler{},
+			body:         `{"server_port": 8388, "cipher": "aes-256-gcm", "server_key": "key", "obfs": "http", "obfs_settings": {"host": "example.com"}}`,
+			wantSecurity: None,
+			wantPort:     8388,
+			assertInfoSet: func(t *testing.T, info *NodeInfo) {
+				t.Helper()
+				if info.Shadowsocks == nil || info.Shadowsocks.Cipher != "aes-256-gcm" {
+					t.Fatalf("Shadowsocks = %#v", info.Shadowsocks)
+				}
+			},
+		},
+		{
+			name:         "trojan",
+			handler:      &TrojanHandler{},
+			body:         `{"server_port": 443, "server_name": "trojan.example", "network": "tcp", "networkSettings": {"header": {"type": "none"}}}`,
+			wantSecurity: Tls,
+			wantPort:     443,
+			assertInfoSet: func(t *testing.T, info *NodeInfo) {
+				t.Helper()
+				if info.Trojan == nil || info.Trojan.Network != "tcp" {
+					t.Fatalf("Trojan = %#v", info.Trojan)
+				}
+			},
+		},
+		{
+			name:         "tuic",
+			handler:      &TuicHandler{},
+			body:         `{"server_port": 8443, "server_name": "tuic.example", "congestion_control": "bbr", "zero_rtt_handshake": true}`,
+			wantSecurity: Tls,
+			wantPort:     8443,
+			assertInfoSet: func(t *testing.T, info *NodeInfo) {
+				t.Helper()
+				if info.Tuic == nil || info.Tuic.CongestionControl != "bbr" || !info.Tuic.ZeroRTTHandshake {
+					t.Fatalf("Tuic = %#v", info.Tuic)
+				}
+			},
+		},
+		{
+			name:         "hysteria",
+			handler:      &HysteriaHandler{},
+			body:         `{"server_port": 8443, "server_name": "hy.example", "version": 1, "up_mbps": 100, "down_mbps": 200, "obfs": "secret"}`,
+			wantSecurity: Tls,
+			wantPort:     8443,
+			assertInfoSet: func(t *testing.T, info *NodeInfo) {
+				t.Helper()
+				if info.Hysteria == nil || info.Hysteria.UpMbps != 100 || info.Hysteria.Obfs != "secret" {
+					t.Fatalf("Hysteria = %#v", info.Hysteria)
+				}
+			},
+		},
+		{
+			name:         "hysteria2",
+			handler:      &Hysteria2Handler{},
+			body:         `{"server_port": 8443, "server_name": "hy2.example", "version": 2, "ignore_client_bandwidth": true, "up_mbps": 100, "down_mbps": 200, "obfs": "salamander", "obfs-password": "secret"}`,
+			wantSecurity: Tls,
+			wantPort:     8443,
+			assertInfoSet: func(t *testing.T, info *NodeInfo) {
+				t.Helper()
+				if info.Hysteria2 == nil || !info.Hysteria2.IgnoreClientBandwidth || info.Hysteria2.ObfsPassword != "secret" {
+					t.Fatalf("Hysteria2 = %#v", info.Hysteria2)
+				}
+			},
+		},
+		{
+			name:         "anytls",
+			handler:      &AnyTlsHandler{},
+			body:         `{"server_port": 443, "server_name": "anytls.example", "padding_scheme": ["stop=8", "0=30-30"]}`,
+			wantSecurity: Tls,
+			wantPort:     443,
+			assertInfoSet: func(t *testing.T, info *NodeInfo) {
+				t.Helper()
+				if info.AnyTls == nil || len(info.AnyTls.PaddingScheme) != 2 {
+					t.Fatalf("AnyTls = %#v", info.AnyTls)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := &NodeInfo{Id: 1, Type: tt.name}
+			cm, err := tt.handler.ParseConfig(info, []byte(tt.body))
+			if err != nil {
+				t.Fatalf("ParseConfig failed: %v", err)
+			}
+			if cm == nil {
+				t.Fatal("CommonNode nil")
+			}
+			if cm.ServerPort != tt.wantPort {
+				t.Fatalf("ServerPort = %d, want %d", cm.ServerPort, tt.wantPort)
+			}
+			if info.Security != tt.wantSecurity {
+				t.Fatalf("Security = %d, want %d", info.Security, tt.wantSecurity)
+			}
+			tt.assertInfoSet(t, info)
+		})
+	}
+}
+
+func TestNodeHandlers_ReturnErrorsForMalformedJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler NodeHandler
+	}{
+		{name: "vmess", handler: &VMessHandler{}},
+		{name: "vless", handler: &VlessHandler{}},
+		{name: "shadowsocks", handler: &ShadowsocksHandler{}},
+		{name: "trojan", handler: &TrojanHandler{}},
+		{name: "tuic", handler: &TuicHandler{}},
+		{name: "hysteria", handler: &HysteriaHandler{}},
+		{name: "hysteria2", handler: &Hysteria2Handler{}},
+		{name: "anytls", handler: &AnyTlsHandler{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.handler.ParseConfig(&NodeInfo{}, []byte("not valid json"))
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "decode "+tt.name+" params error") {
+				t.Fatalf("error = %q", err.Error())
+			}
+		})
+	}
+}
+
+func TestNodeHandlers_ReturnErrorForNilNodeInfo(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler NodeHandler
+	}{
+		{name: "vmess", handler: &VMessHandler{}},
+		{name: "vless", handler: &VlessHandler{}},
+		{name: "shadowsocks", handler: &ShadowsocksHandler{}},
+		{name: "trojan", handler: &TrojanHandler{}},
+		{name: "tuic", handler: &TuicHandler{}},
+		{name: "hysteria", handler: &HysteriaHandler{}},
+		{name: "hysteria2", handler: &Hysteria2Handler{}},
+		{name: "anytls", handler: &AnyTlsHandler{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.handler.ParseConfig(nil, []byte(`{"server_port": 443}`))
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "node info is nil") {
+				t.Fatalf("error = %q", err.Error())
+			}
+		})
+	}
+}
+
 func TestVMessHandler_v2boardFormat(t *testing.T) {
 	body := []byte(`{
 		"server_port": 10086,

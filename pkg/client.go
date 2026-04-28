@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,8 @@ const (
 	headerIfNoneMatch = "If-None-Match"
 	headerETag        = "ETag"
 	contentTypeJSON   = "application/json"
+	getRetryCount     = 2
+	getRetryBackoff   = 10 * time.Millisecond
 )
 
 func ipv4FirstTransport() *http.Transport {
@@ -67,12 +70,70 @@ type Client struct {
 	userEtag         string
 	responseBodyHash string
 	userBodyHash     string
-	UserList         *UserListBody
-	handlers         map[string]NodeHandler
+	// Deprecated: use CachedUserList to read cached users without sharing mutable state.
+	UserList *UserListBody
+	handlers map[string]NodeHandler
 }
 
-// New creat a api instance
+func normalizeNodeType(nodeType string) (string, bool) {
+	normalized := strings.ToLower(nodeType)
+	if normalized == "v2ray" {
+		return Vmess, true
+	}
+	switch normalized {
+	case Vmess, Trojan, Shadowsocks, Hysteria, Hysteria2, Tuic, AnyTls, Vless:
+		return normalized, true
+	default:
+		return normalized, false
+	}
+}
+
+func validateConfig(c *Config) error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	if strings.TrimSpace(c.APIHost) == "" {
+		return errors.New("api host is required")
+	}
+	parsed, err := url.Parse(c.APIHost)
+	if err != nil {
+		return fmt.Errorf("invalid api host: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("api host scheme must be http or https: %s", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return errors.New("api host must include host")
+	}
+	if strings.TrimSpace(c.Key) == "" {
+		return errors.New("api key is required")
+	}
+	if c.NodeID <= 0 {
+		return fmt.Errorf("node id must be positive: %d", c.NodeID)
+	}
+	if _, ok := normalizeNodeType(c.NodeType); !ok {
+		return fmt.Errorf("unsupported node type: %s", c.NodeType)
+	}
+	if c.APISendIP != "" && net.ParseIP(c.APISendIP) == nil {
+		return fmt.Errorf("invalid api send ip: %s", c.APISendIP)
+	}
+	return nil
+}
+
+func NewWithError(c *Config) (*Client, error) {
+	if err := validateConfig(c); err != nil {
+		return nil, err
+	}
+	return New(c), nil
+}
+
+// New creates an API client for the panel and returns nil when config validation fails.
 func New(c *Config) *Client {
+	if err := validateConfig(c); err != nil {
+		log.Warnf("invalid api config: %v", err)
+		return nil
+	}
+
 	var client *resty.Client
 	if c.APISendIP != "" {
 		client = resty.NewWithLocalAddr(&net.TCPAddr{
@@ -83,7 +144,7 @@ func New(c *Config) *Client {
 		client.SetTransport(ipv4FirstTransport())
 	}
 
-	client.SetRetryCount(3)
+	client.SetRetryCount(0)
 	if c.Timeout > 0 {
 		client.SetTimeout(time.Duration(c.Timeout) * time.Second)
 	} else {
@@ -99,13 +160,8 @@ func New(c *Config) *Client {
 
 	client.SetBaseURL(c.APIHost)
 
-	// Check node type and normalize
-	nodeType := strings.ToLower(c.NodeType)
-	switch nodeType {
-	case "v2ray":
-		nodeType = "vmess"
-	case "vmess", "trojan", "shadowsocks", "hysteria", "hysteria2", "tuic", "anytls", "vless":
-	default:
+	nodeType, ok := normalizeNodeType(c.NodeType)
+	if !ok {
 		log.Warnf("Unknown Node type: %s", nodeType)
 	}
 
@@ -145,9 +201,22 @@ func (c *Client) Debug(enable bool) {
 	c.client.SetDebug(enable)
 }
 
+// CachedUserList returns a copy of the cached users.
+func (c *Client) CachedUserList() []UserInfo {
+	c.userMu.Lock()
+	defer c.userMu.Unlock()
+	if c.UserList == nil {
+		return nil
+	}
+	return cloneUserInfos(c.UserList.Users)
+}
+
 func (c *Client) checkResponse(r *resty.Response, path string, err error) error {
 	if err != nil {
 		return NewNetworkError(fmt.Sprintf("request %s failed", path), path, err)
+	}
+	if r == nil {
+		return NewNetworkError(fmt.Sprintf("request %s returned nil response", path), path, errors.New("nil response"))
 	}
 	if r.StatusCode() >= 400 {
 		return NewAPIErrorFromStatusCode(
@@ -160,16 +229,90 @@ func (c *Client) checkResponse(r *resty.Response, path string, err error) error 
 	return nil
 }
 
+func refreshETag(current *string, newETag string) {
+	if newETag != "" {
+		*current = newETag
+	}
+}
+
+func cloneUserInfos(users []UserInfo) []UserInfo {
+	if users == nil {
+		return nil
+	}
+	return append([]UserInfo(nil), users...)
+}
+
+func validateCommonNode(cm *CommonNode) error {
+	if cm == nil {
+		return errors.New("common node is nil")
+	}
+	if cm.ServerPort <= 0 || cm.ServerPort > 65535 {
+		return fmt.Errorf("server_port must be between 1 and 65535: %d", cm.ServerPort)
+	}
+	return nil
+}
+
+func validateTLSEnum(protocol string, value int) error {
+	switch value {
+	case None, Tls, Reality:
+		return nil
+	default:
+		return fmt.Errorf("%s tls must be one of %d, %d, or %d: %d", protocol, None, Tls, Reality, value)
+	}
+}
+
+func validateProtocolSpecificNode(node *NodeInfo) error {
+	if node.VMess != nil {
+		return validateTLSEnum(Vmess, node.VMess.Tls)
+	}
+	if node.Vless != nil {
+		return validateTLSEnum(Vless, node.Vless.Tls)
+	}
+	if node.Hysteria != nil && (node.Hysteria.UpMbps < 0 || node.Hysteria.DownMbps < 0) {
+		return fmt.Errorf("hysteria bandwidth must be non-negative")
+	}
+	if node.Hysteria2 != nil && (node.Hysteria2.UpMbps < 0 || node.Hysteria2.DownMbps < 0) {
+		return fmt.Errorf("hysteria2 bandwidth must be non-negative")
+	}
+	return nil
+}
+
+func (c *Client) getWithRetry(ctx context.Context, path string, configure func(*resty.Request)) (*resty.Response, error) {
+	var r *resty.Response
+	var err error
+	for attempt := 0; attempt <= getRetryCount; attempt++ {
+		req := c.client.R().SetContext(ctx).ForceContentType(contentTypeJSON)
+		if configure != nil {
+			configure(req)
+		}
+		r, err = req.Get(path)
+		if err == nil && r != nil && r.StatusCode() < 500 {
+			return r, nil
+		}
+		if ctx.Err() != nil {
+			return r, ctx.Err()
+		}
+		if attempt < getRetryCount {
+			select {
+			case <-ctx.Done():
+				return r, ctx.Err()
+			case <-time.After(getRetryBackoff):
+			}
+		}
+	}
+	if err == nil && r == nil {
+		err = errors.New("nil response")
+	}
+	return r, err
+}
+
 func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 	c.nodeMu.Lock()
 	defer c.nodeMu.Unlock()
 
-	r, err := c.client.
-		R().
-		SetContext(ctx).
-		SetHeader(headerIfNoneMatch, c.nodeEtag).
-		ForceContentType(contentTypeJSON).
-		Get(apiConfigPath)
+	r, err := c.getWithRetry(ctx, apiConfigPath, func(req *resty.Request) {
+		req.SetHeader(headerIfNoneMatch, c.nodeEtag)
+	})
 
 	if err != nil {
 		return nil, NewNetworkError("request failed", apiConfigPath, err)
@@ -183,18 +326,17 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 		return nil, err
 	}
 
-	hash := sha256.Sum256(r.Body())
-	newBodyHash := hex.EncodeToString(hash[:])
-
-	if c.responseBodyHash == newBodyHash {
-		return nil, nil
-	}
-
-	c.responseBodyHash = newBodyHash
-	c.nodeEtag = r.Header().Get(headerETag)
-
 	if r.Body() == nil {
 		return nil, NewNetworkError("received nil response body", apiConfigPath, nil)
+	}
+
+	hash := sha256.Sum256(r.Body())
+	newBodyHash := hex.EncodeToString(hash[:])
+	newEtag := r.Header().Get(headerETag)
+
+	if c.responseBodyHash == newBodyHash {
+		refreshETag(&c.nodeEtag, newEtag)
+		return nil, nil
 	}
 
 	node = &NodeInfo{
@@ -216,8 +358,17 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 	if err != nil {
 		return nil, NewParseError(fmt.Sprintf("decode %s params error", c.NodeType), err)
 	}
+	if err := validateCommonNode(cm); err != nil {
+		return nil, NewParseError(fmt.Sprintf("validate %s params error", c.NodeType), err)
+	}
+	if err := validateProtocolSpecificNode(node); err != nil {
+		return nil, NewParseError(fmt.Sprintf("validate %s params error", c.NodeType), err)
+	}
 
 	node.ProcessCommonNode(cm)
+
+	c.responseBodyHash = newBodyHash
+	refreshETag(&c.nodeEtag, newEtag)
 
 	return node, nil
 }
@@ -227,11 +378,9 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 	c.userMu.Lock()
 	defer c.userMu.Unlock()
 
-	r, err := c.client.R().
-		SetContext(ctx).
-		SetHeader(headerIfNoneMatch, c.userEtag).
-		ForceContentType(contentTypeJSON).
-		Get(apiUserPath)
+	r, err := c.getWithRetry(ctx, apiUserPath, func(req *resty.Request) {
+		req.SetHeader(headerIfNoneMatch, c.userEtag)
+	})
 
 	if err != nil {
 		return nil, NewNetworkError("request failed", apiUserPath, err)
@@ -239,7 +388,7 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 
 	if r.StatusCode() == 304 {
 		if c.UserList != nil {
-			return c.UserList.Users, nil
+			return cloneUserInfos(c.UserList.Users), nil
 		}
 		return nil, nil
 	}
@@ -250,9 +399,11 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 
 	hash := sha256.Sum256(r.Body())
 	newHash := hex.EncodeToString(hash[:])
+	newEtag := r.Header().Get(headerETag)
 	if c.userBodyHash == newHash {
+		refreshETag(&c.userEtag, newEtag)
 		if c.UserList != nil {
-			return c.UserList.Users, nil
+			return cloneUserInfos(c.UserList.Users), nil
 		}
 		return nil, nil
 	}
@@ -262,11 +413,11 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 		return nil, NewParseError("decode user list error", err)
 	}
 
-	c.userEtag = r.Header().Get(headerETag)
+	refreshETag(&c.userEtag, newEtag)
 	c.userBodyHash = newHash
 	c.UserList = userlist
 
-	return userlist.Users, nil
+	return cloneUserInfos(userlist.Users), nil
 }
 
 func (c *Client) ReportUserTraffic(ctx context.Context, userTraffic []UserTraffic) error {
@@ -294,10 +445,7 @@ func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]strin
 }
 
 func (c *Client) GetAliveList(ctx context.Context) (map[int]int, error) {
-	r, err := c.client.R().
-		SetContext(ctx).
-		ForceContentType(contentTypeJSON).
-		Get(apiAliveListPath)
+	r, err := c.getWithRetry(ctx, apiAliveListPath, nil)
 
 	if err != nil {
 		return nil, NewNetworkError("request failed", apiAliveListPath, err)

@@ -2,12 +2,80 @@ package pkg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+func TestNewWithError_ValidatesConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *Config
+	}{
+		{name: "nil config", config: nil},
+		{name: "empty host", config: &Config{Key: "token", NodeID: 1, NodeType: "vless"}},
+		{name: "whitespace host", config: &Config{APIHost: "   ", Key: "token", NodeID: 1, NodeType: "vless"}},
+		{name: "invalid host", config: &Config{APIHost: "://bad", Key: "token", NodeID: 1, NodeType: "vless"}},
+		{name: "host without scheme", config: &Config{APIHost: "example.com", Key: "token", NodeID: 1, NodeType: "vless"}},
+		{name: "host without hostname", config: &Config{APIHost: "http://", Key: "token", NodeID: 1, NodeType: "vless"}},
+		{name: "unsupported scheme", config: &Config{APIHost: "ftp://example.com", Key: "token", NodeID: 1, NodeType: "vless"}},
+		{name: "empty key", config: &Config{APIHost: "http://127.0.0.1", NodeID: 1, NodeType: "vless"}},
+		{name: "whitespace key", config: &Config{APIHost: "http://127.0.0.1", Key: "   ", NodeID: 1, NodeType: "vless"}},
+		{name: "zero node id", config: &Config{APIHost: "http://127.0.0.1", Key: "token", NodeID: 0, NodeType: "vless"}},
+		{name: "negative node id", config: &Config{APIHost: "http://127.0.0.1", Key: "token", NodeID: -1, NodeType: "vless"}},
+		{name: "unsupported node type", config: &Config{APIHost: "http://127.0.0.1", Key: "token", NodeID: 1, NodeType: "unknown"}},
+		{name: "invalid send ip", config: &Config{APIHost: "http://127.0.0.1", APISendIP: "not-an-ip", Key: "token", NodeID: 1, NodeType: "vless"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := NewWithError(tt.config)
+			if err == nil {
+				t.Fatalf("expected error, got client %#v", client)
+			}
+		})
+	}
+}
+
+func TestNew_NilConfigDoesNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("New(nil) panicked: %v", r)
+		}
+	}()
+
+	client := New(nil)
+	if client != nil {
+		t.Fatalf("New(nil) = %#v, want nil", client)
+	}
+}
+
+func TestNewWithError_AcceptsSupportedNodeTypes(t *testing.T) {
+	types := []string{"vmess", "vless", "trojan", "shadowsocks", "hysteria", "hysteria2", "tuic", "anytls", "v2ray", "VLESS"}
+	for _, nodeType := range types {
+		t.Run(nodeType, func(t *testing.T) {
+			client, err := NewWithError(&Config{APIHost: "http://127.0.0.1", Key: "token", NodeID: 1, NodeType: nodeType})
+			if err != nil {
+				t.Fatalf("NewWithError failed: %v", err)
+			}
+			if client == nil {
+				t.Fatal("client is nil")
+			}
+			if nodeType == "v2ray" && client.NodeType != Vmess {
+				t.Fatalf("NodeType = %q, want %q", client.NodeType, Vmess)
+			}
+			if nodeType == "VLESS" && client.NodeType != Vless {
+				t.Fatalf("NodeType = %q, want %q", client.NodeType, Vless)
+			}
+		})
+	}
+}
 
 func TestClient_Concurrency(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +124,19 @@ func TestClient_Concurrency(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestClient_CheckResponseNilResponseReturnsNetworkError(t *testing.T) {
+	client := New(&Config{APIHost: "http://127.0.0.1", Key: "token", NodeID: 1, NodeType: "vless"})
+
+	err := client.checkResponse(nil, apiPushPath, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !apiErr.IsNetworkError() {
+		t.Fatalf("expected network APIError, got %T: %v", err, err)
+	}
 }
 
 func TestClient_ReturnsAPIError_OnServerError(t *testing.T) {
@@ -224,6 +305,118 @@ func TestClient_304NotModified(t *testing.T) {
 	}
 }
 
+func TestClient_GetNodeInfo_RejectsMissingServerPort(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"server_name": "test"}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	_, err := client.GetNodeInfo(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !apiErr.IsParseError() {
+		t.Fatalf("expected parse APIError, got %T: %v", err, err)
+	}
+}
+
+func TestClient_GetNodeInfo_RejectsZeroServerPort(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"server_port": 0, "server_name": "test"}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	_, err := client.GetNodeInfo(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !apiErr.IsParseError() {
+		t.Fatalf("expected parse APIError, got %T: %v", err, err)
+	}
+}
+
+func TestClient_GetNodeInfo_RejectsOutOfRangeServerPort(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"server_port": 65536, "server_name": "bad-port"}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	_, err := client.GetNodeInfo(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !apiErr.IsParseError() {
+		t.Fatalf("expected parse APIError, got %T: %v", err, err)
+	}
+}
+
+func TestClient_GetNodeInfo_RejectsImpossibleProtocolValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		nodeType string
+		body     string
+	}{
+		{name: "vmess invalid tls", nodeType: "vmess", body: `{"server_port":443,"tls":99}`},
+		{name: "vless invalid tls", nodeType: "vless", body: `{"server_port":443,"tls":-1}`},
+		{name: "hysteria negative up", nodeType: "hysteria", body: `{"server_port":443,"up_mbps":-1,"down_mbps":0}`},
+		{name: "hysteria2 negative down", nodeType: "hysteria2", body: `{"server_port":443,"up_mbps":0,"down_mbps":-1}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: tt.nodeType, Timeout: 1})
+			_, err := client.GetNodeInfo(context.Background())
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || !apiErr.IsParseError() {
+				t.Fatalf("expected parse APIError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestClient_GetNodeInfo_AcceptsConservativeProtocolValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		nodeType string
+		body     string
+	}{
+		{name: "vmess none tls", nodeType: "vmess", body: `{"server_port":443,"tls":0}`},
+		{name: "vmess tls", nodeType: "vmess", body: `{"server_port":443,"tls":1}`},
+		{name: "vless reality", nodeType: "vless", body: `{"server_port":443,"tls":2}`},
+		{name: "hysteria zero bandwidth", nodeType: "hysteria", body: `{"server_port":443,"up_mbps":0,"down_mbps":0}`},
+		{name: "hysteria2 zero bandwidth", nodeType: "hysteria2", body: `{"server_port":443,"up_mbps":0,"down_mbps":0}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: tt.nodeType, Timeout: 1})
+			_, err := client.GetNodeInfo(context.Background())
+			if err != nil {
+				t.Fatalf("GetNodeInfo failed: %v", err)
+			}
+		})
+	}
+}
+
 func TestClient_GetUserList_BodyHashDedup(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -258,6 +451,437 @@ func TestClient_GetUserList_BodyHashDedup(t *testing.T) {
 	}
 	if len(users) != 2 {
 		t.Errorf("expected cached 2 users via hash dedup, got %d", len(users))
+	}
+}
+
+func TestClient_CachedUserListReturnsCopy(t *testing.T) {
+	client := New(&Config{APIHost: "http://127.0.0.1", Key: "token", NodeID: 1, NodeType: "vless"})
+	client.UserList = &UserListBody{Users: []UserInfo{{Id: 1, Uuid: "u1"}}}
+
+	users := client.CachedUserList()
+	users[0].Uuid = "mutated"
+
+	if client.UserList.Users[0].Uuid != "u1" {
+		t.Fatalf("cached uuid = %q, want u1", client.UserList.Users[0].Uuid)
+	}
+}
+
+func TestClient_CachedUserListNilCache(t *testing.T) {
+	client := New(&Config{APIHost: "http://127.0.0.1", Key: "token", NodeID: 1, NodeType: "vless"})
+	client.UserList = nil
+	if users := client.CachedUserList(); users != nil {
+		t.Fatalf("users = %#v, want nil", users)
+	}
+}
+
+func TestClient_GetUserList_ReturnsCopyOnFreshAndCachedResponses(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount > 1 {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set(headerETag, "etag-1")
+		_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "u1"}]}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{
+		APIHost:  server.URL,
+		Key:      "test-token",
+		NodeID:   1,
+		NodeType: "vless",
+		Timeout:  1,
+	})
+
+	users, err := client.GetUserList(context.Background())
+	if err != nil {
+		t.Fatalf("first GetUserList failed: %v", err)
+	}
+	users[0].Uuid = "mutated"
+
+	cached, err := client.GetUserList(context.Background())
+	if err != nil {
+		t.Fatalf("cached GetUserList failed: %v", err)
+	}
+	if cached[0].Uuid != "u1" {
+		t.Fatalf("cached uuid = %q, want u1", cached[0].Uuid)
+	}
+}
+
+func TestClient_RetriesGetButNotPost(t *testing.T) {
+	configCalls := 0
+	pushCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/server/UniProxy/config":
+			configCalls++
+			if configCalls == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			_, _ = w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))
+		case "/api/v1/server/UniProxy/push":
+			pushCalls++
+			w.WriteHeader(http.StatusBadGateway)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := New(&Config{
+		APIHost:  server.URL,
+		Key:      "test-token",
+		NodeID:   1,
+		NodeType: "vless",
+		Timeout:  1,
+	})
+
+	if _, err := client.GetNodeInfo(context.Background()); err != nil {
+		t.Fatalf("GetNodeInfo should retry and succeed: %v", err)
+	}
+	if configCalls != 2 {
+		t.Fatalf("config calls = %d, want 2", configCalls)
+	}
+
+	err := client.ReportUserTraffic(context.Background(), []UserTraffic{{UID: 1, Upload: 10, Download: 20}})
+	if err == nil {
+		t.Fatal("expected ReportUserTraffic error")
+	}
+	if pushCalls != 1 {
+		t.Fatalf("push calls = %d, want 1", pushCalls)
+	}
+}
+
+func TestClient_GetNodeInfo_ParseErrorDoesNotCommitCache(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("ETag", "etag-bad")
+		_, _ = w.Write([]byte(`not valid json`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{
+		APIHost:  server.URL,
+		Key:      "test-token",
+		NodeID:   1,
+		NodeType: "vless",
+		Timeout:  1,
+	})
+
+	if _, err := client.GetNodeInfo(context.Background()); err == nil {
+		t.Fatal("expected first parse error")
+	}
+	if _, err := client.GetNodeInfo(context.Background()); err == nil {
+		t.Fatal("expected second parse error")
+	}
+	if callCount != 2 {
+		t.Fatalf("call count = %d, want 2", callCount)
+	}
+}
+
+func TestClient_GetUserList_BodyHashDedupRefreshesETag(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 3 {
+			if got := r.Header.Get(headerIfNoneMatch); got != "etag-2" {
+				t.Fatalf("If-None-Match = %q, want etag-2", got)
+			}
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", "etag-"+string(rune('0'+callCount)))
+		_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "u1"}]}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{
+		APIHost:  server.URL,
+		Key:      "test-token",
+		NodeID:   1,
+		NodeType: "vless",
+		Timeout:  1,
+	})
+
+	for i := 0; i < 3; i++ {
+		users, err := client.GetUserList(context.Background())
+		if err != nil {
+			t.Fatalf("GetUserList call %d failed: %v", i+1, err)
+		}
+		if len(users) != 1 {
+			t.Fatalf("users count = %d, want 1", len(users))
+		}
+	}
+}
+
+func TestClient_GetUserList_BodyHashDedupKeepsETagWhenMissing(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		switch callCount {
+		case 1:
+			w.Header().Set(headerETag, "etag-1")
+		case 3:
+			if got := r.Header.Get(headerIfNoneMatch); got != "etag-1" {
+				t.Fatalf("If-None-Match = %q, want etag-1", got)
+			}
+		}
+		_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "u1"}]}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{
+		APIHost:  server.URL,
+		Key:      "test-token",
+		NodeID:   1,
+		NodeType: "vless",
+		Timeout:  1,
+	})
+
+	for i := 0; i < 3; i++ {
+		users, err := client.GetUserList(context.Background())
+		if err != nil {
+			t.Fatalf("GetUserList call %d failed: %v", i+1, err)
+		}
+		if len(users) != 1 {
+			t.Fatalf("users count = %d, want 1", len(users))
+		}
+	}
+}
+
+func TestClient_GetNodeInfo_KeepsETagWhenMissing(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		switch callCount {
+		case 1:
+			w.Header().Set(headerETag, "etag-1")
+		case 3:
+			if got := r.Header.Get(headerIfNoneMatch); got != "etag-1" {
+				t.Fatalf("If-None-Match = %q, want etag-1", got)
+			}
+		}
+		_, _ = w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{
+		APIHost:  server.URL,
+		Key:      "test-token",
+		NodeID:   1,
+		NodeType: "vless",
+		Timeout:  1,
+	})
+
+	for i := 0; i < 3; i++ {
+		_, err := client.GetNodeInfo(context.Background())
+		if err != nil {
+			t.Fatalf("GetNodeInfo call %d failed: %v", i+1, err)
+		}
+	}
+}
+
+func TestClient_GetWithRetryWaitsBetweenServerErrors(t *testing.T) {
+	callCount := 0
+	var previousCall time.Time
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 2 && time.Since(previousCall) < 5*time.Millisecond {
+			t.Fatalf("retry happened without backoff")
+		}
+		previousCall = time.Now()
+		if callCount == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{
+		APIHost:  server.URL,
+		Key:      "test-token",
+		NodeID:   1,
+		NodeType: "vless",
+		Timeout:  1,
+	})
+
+	if _, err := client.GetNodeInfo(context.Background()); err != nil {
+		t.Fatalf("GetNodeInfo failed: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("call count = %d, want 2", callCount)
+	}
+}
+
+func TestClient_ReportNodeOnlineUsers_PostsAlivePayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != apiAlivePath {
+			t.Fatalf("path = %q, want %q", r.URL.Path, apiAlivePath)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %q, want POST", r.Method)
+		}
+		if got := r.Header.Get("Content-Type"); got != contentTypeJSON {
+			t.Fatalf("Content-Type = %q, want %q", got, contentTypeJSON)
+		}
+
+		var body map[int][]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		ips := body[1]
+		if len(ips) != 2 || ips[0] != "203.0.113.1_1" || ips[1] != "203.0.113.2_1" {
+			t.Fatalf("body[1] = %#v", ips)
+		}
+		_, _ = w.Write([]byte(`{"data": true}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{
+		APIHost:  server.URL,
+		Key:      "test-token",
+		NodeID:   1,
+		NodeType: "vless",
+		Timeout:  1,
+	})
+
+	err := client.ReportNodeOnlineUsers(context.Background(), map[int][]string{
+		1: {"203.0.113.1_1", "203.0.113.2_1"},
+	})
+	if err != nil {
+		t.Fatalf("ReportNodeOnlineUsers failed: %v", err)
+	}
+}
+
+func TestClient_GetUserList_ParseError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`not valid json`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	_, err := client.GetUserList(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !apiErr.IsParseError() {
+		t.Fatalf("expected parse APIError, got %T: %v", err, err)
+	}
+}
+
+func TestClient_GetUserList_ParseErrorDoesNotCommitCache(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.Header().Set("ETag", "bad-etag")
+			_, _ = w.Write([]byte(`not valid json`))
+			return
+		}
+		w.Header().Set("ETag", "good-etag")
+		_, _ = w.Write([]byte(`{"users":[{"id":1,"uuid":"ok"}]}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	if _, err := client.GetUserList(context.Background()); err == nil {
+		t.Fatal("expected parse error")
+	}
+	users, err := client.GetUserList(context.Background())
+	if err != nil {
+		t.Fatalf("second GetUserList failed: %v", err)
+	}
+	if len(users) != 1 || users[0].Uuid != "ok" {
+		t.Fatalf("users = %#v", users)
+	}
+	if client.userEtag != "good-etag" {
+		t.Fatalf("userEtag = %q, want good-etag", client.userEtag)
+	}
+}
+
+func TestClient_GetUserList_304WithoutCacheReturnsNil(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	users, err := client.GetUserList(context.Background())
+	if err != nil {
+		t.Fatalf("GetUserList failed: %v", err)
+	}
+	if users != nil {
+		t.Fatalf("users = %#v, want nil", users)
+	}
+}
+
+func TestClient_GetRequestsIncludeAuthAndNodeQueryParams(t *testing.T) {
+	requestCount := 0
+	var requestErrors []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if got := r.URL.Query().Get("token"); got != "token" {
+			requestErrors = append(requestErrors, fmt.Sprintf("token query = %q", got))
+		}
+		if got := r.URL.Query().Get("node_id"); got != "7" {
+			requestErrors = append(requestErrors, fmt.Sprintf("node_id query = %q", got))
+		}
+		if got := r.URL.Query().Get("node_type"); got != "vless" {
+			requestErrors = append(requestErrors, fmt.Sprintf("node_type query = %q", got))
+		}
+		if requestCount == 1 && r.Header.Get(headerIfNoneMatch) != "" {
+			requestErrors = append(requestErrors, fmt.Sprintf("first If-None-Match = %q", r.Header.Get(headerIfNoneMatch)))
+		}
+		if requestCount == 2 && r.Header.Get(headerIfNoneMatch) != "etag-1" {
+			requestErrors = append(requestErrors, fmt.Sprintf("second If-None-Match = %q", r.Header.Get(headerIfNoneMatch)))
+		}
+		w.Header().Set(headerETag, "etag-1")
+		_, _ = w.Write([]byte(`{"users":[{"id":1,"uuid":"ok"}]}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 7, NodeType: "vless", Timeout: 1})
+	if _, err := client.GetUserList(context.Background()); err != nil {
+		t.Fatalf("first GetUserList failed: %v", err)
+	}
+	if _, err := client.GetUserList(context.Background()); err != nil {
+		t.Fatalf("second GetUserList failed: %v", err)
+	}
+	if len(requestErrors) > 0 {
+		t.Fatalf("request errors: %s", strings.Join(requestErrors, "; "))
+	}
+}
+
+func TestClient_ReportUserTraffic_PostsPushPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != apiPushPath {
+			t.Fatalf("path = %q, want %q", r.URL.Path, apiPushPath)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %q, want POST", r.Method)
+		}
+		var body map[int][]int64
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		got := body[1]
+		if len(got) != 2 || got[0] != 10 || got[1] != 20 {
+			t.Fatalf("body[1] = %#v", got)
+		}
+		_, _ = w.Write([]byte(`{"data": true}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	err := client.ReportUserTraffic(context.Background(), []UserTraffic{{UID: 1, Upload: 10, Download: 20}})
+	if err != nil {
+		t.Fatalf("ReportUserTraffic failed: %v", err)
 	}
 }
 
@@ -320,6 +944,23 @@ func TestClient_GetAliveList_ServerError(t *testing.T) {
 	}
 	if !apiErr.IsServerError() {
 		t.Errorf("expected server error, got type %s", apiErr.Type)
+	}
+}
+
+func TestClient_GetAliveList_ParseError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`not valid json`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	_, err := client.GetAliveList(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !apiErr.IsParseError() {
+		t.Fatalf("expected parse APIError, got %T: %v", err, err)
 	}
 }
 
