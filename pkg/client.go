@@ -420,7 +420,56 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 	return cloneUserInfos(userlist.Users), nil
 }
 
+func validateUserTraffic(userTraffic []UserTraffic) error {
+	seen := make(map[int]struct{}, len(userTraffic))
+	for i := range userTraffic {
+		if userTraffic[i].UID <= 0 {
+			return fmt.Errorf("user traffic uid must be positive: %d", userTraffic[i].UID)
+		}
+		if _, ok := seen[userTraffic[i].UID]; ok {
+			return fmt.Errorf("duplicate user traffic uid: %d", userTraffic[i].UID)
+		}
+		seen[userTraffic[i].UID] = struct{}{}
+		if userTraffic[i].Upload < 0 || userTraffic[i].Download < 0 {
+			return fmt.Errorf("user traffic must be non-negative for uid %d", userTraffic[i].UID)
+		}
+	}
+	return nil
+}
+
+func validateOnlineUsers(data map[int][]string) error {
+	for uid, users := range data {
+		if uid <= 0 {
+			return fmt.Errorf("online user uid must be positive: %d", uid)
+		}
+		if len(users) == 0 {
+			return fmt.Errorf("online user list is empty for uid %d", uid)
+		}
+		for _, user := range users {
+			parts := strings.Split(user, "_")
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid online user entry for uid %d: %q", uid, user)
+			}
+			ip := strings.TrimSpace(parts[0])
+			suffix := strings.TrimSpace(parts[1])
+			if parts[0] != ip || parts[1] != suffix || ip == "" || suffix == "" || net.ParseIP(ip) == nil {
+				return fmt.Errorf("invalid online user entry for uid %d: %q", uid, user)
+			}
+			if strings.HasPrefix(suffix, "+") || strings.HasPrefix(suffix, "-") {
+				return fmt.Errorf("invalid online user entry for uid %d: %q", uid, user)
+			}
+			if _, err := strconv.Atoi(suffix); err != nil {
+				return fmt.Errorf("invalid online user entry for uid %d: %q", uid, user)
+			}
+		}
+	}
+	return nil
+}
+
 func (c *Client) ReportUserTraffic(ctx context.Context, userTraffic []UserTraffic) error {
+	if err := validateUserTraffic(userTraffic); err != nil {
+		return err
+	}
 	data := make(map[int][]int64, len(userTraffic))
 	for i := range userTraffic {
 		data[userTraffic[i].UID] = []int64{userTraffic[i].Upload, userTraffic[i].Download}
@@ -435,6 +484,9 @@ func (c *Client) ReportUserTraffic(ctx context.Context, userTraffic []UserTraffi
 }
 
 func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]string) error {
+	if err := validateOnlineUsers(data); err != nil {
+		return err
+	}
 	r, err := c.client.R().
 		SetContext(ctx).
 		SetBody(data).
@@ -460,6 +512,10 @@ func (c *Client) GetAliveList(ctx context.Context) (map[int]int, error) {
 	}
 	if err := json.Unmarshal(r.Body(), &resp); err != nil {
 		return nil, NewParseError("decode alive list error", err)
+	}
+
+	if resp.Alive == nil {
+		return map[int]int{}, nil
 	}
 
 	return resp.Alive, nil

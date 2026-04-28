@@ -141,8 +141,8 @@ func TestProcessCommonNodePreservesRoutesAndLegacyRules(t *testing.T) {
 	if len(node.Routes) != 8 {
 		t.Fatalf("routes count = %d, want 8", len(node.Routes))
 	}
-	if len(common.Routes) != 0 {
-		t.Fatalf("common routes count = %d, want 0", len(common.Routes))
+	if len(common.Routes) != 8 {
+		t.Fatalf("common routes count = %d, want 8", len(common.Routes))
 	}
 	if node.Routes[5].Action != RouteActionRoute || node.Routes[5].ActionValue == "" {
 		t.Fatalf("custom route not preserved: %#v", node.Routes[5])
@@ -198,8 +198,22 @@ func TestProcessCommonNode_BaseConfigAndDNSMain(t *testing.T) {
 	if string(node.RawDNS.DNSJson) != `{"servers":["1.1.1.1"]}` {
 		t.Fatalf("DNSJson = %q", string(node.RawDNS.DNSJson))
 	}
-	if common.BaseConfig != nil {
-		t.Fatal("common BaseConfig was not cleared")
+	if common.BaseConfig == nil {
+		t.Fatal("common BaseConfig was cleared")
+	}
+}
+
+func TestProcessCommonNode_DNSMainStringPreservesJSONWithCommas(t *testing.T) {
+	node := &NodeInfo{RawDNS: RawDNS{DNSMap: map[string]map[string]interface{}{}, DNSJson: []byte{}}}
+	common := &CommonNode{
+		Routes: []Route{{Action: RouteActionDNS, Match: `main,{"servers":["1.1.1.1","8.8.8.8"]}`}},
+	}
+
+	node.ProcessCommonNode(common)
+
+	want := `{"servers":["1.1.1.1","8.8.8.8"]}`
+	if string(node.RawDNS.DNSJson) != want {
+		t.Fatalf("DNSJson = %q, want %q", string(node.RawDNS.DNSJson), want)
 	}
 }
 

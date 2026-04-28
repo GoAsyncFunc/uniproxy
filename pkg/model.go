@@ -85,6 +85,18 @@ func (r Route) Matches() []string {
 	return NormalizeRouteMatch(r.Match)
 }
 
+func (r Route) DNSMatches() []string {
+	match, ok := r.Match.(string)
+	if !ok {
+		return r.Matches()
+	}
+	prefix, value, found := strings.Cut(match, ",")
+	if !found || strings.TrimSpace(prefix) != "main" {
+		return r.Matches()
+	}
+	return []string{"main", strings.TrimSpace(value)}
+}
+
 func IsBlockRouteAction(action string) bool {
 	switch action {
 	case RouteActionBlock, RouteActionBlockIP, RouteActionBlockPort, RouteActionProtocol:
@@ -359,6 +371,7 @@ func (node *NodeInfo) ProcessCommonNode(cm *CommonNode) {
 			}
 			node.Rules.Protocol = append(node.Rules.Protocol, protocols...)
 		case RouteActionDNS:
+			matches = cm.Routes[i].DNSMatches()
 			var domains []string
 			domains = append(domains, matches...)
 			if len(matches) > 0 && matches[0] != "main" {
@@ -383,7 +396,4 @@ func (node *NodeInfo) ProcessCommonNode(cm *CommonNode) {
 	}
 
 	node.Common = cm
-	// Clear fields to save memory if needed
-	cm.Routes = nil
-	cm.BaseConfig = nil
 }

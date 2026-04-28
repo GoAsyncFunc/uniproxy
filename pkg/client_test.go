@@ -858,6 +858,79 @@ func TestClient_GetRequestsIncludeAuthAndNodeQueryParams(t *testing.T) {
 	}
 }
 
+func TestClient_ReportUserTraffic_RejectsInvalidPayload(t *testing.T) {
+	tests := []struct {
+		name    string
+		traffic []UserTraffic
+	}{
+		{name: "zero uid", traffic: []UserTraffic{{UID: 0, Upload: 1, Download: 1}}},
+		{name: "negative uid", traffic: []UserTraffic{{UID: -1, Upload: 1, Download: 1}}},
+		{name: "negative upload", traffic: []UserTraffic{{UID: 1, Upload: -1, Download: 1}}},
+		{name: "negative download", traffic: []UserTraffic{{UID: 1, Upload: 1, Download: -1}}},
+		{name: "duplicate uid", traffic: []UserTraffic{{UID: 1, Upload: 1, Download: 1}, {UID: 1, Upload: 2, Download: 2}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+
+			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+			err := client.ReportUserTraffic(context.Background(), tt.traffic)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if called {
+				t.Fatal("server was called for invalid payload")
+			}
+		})
+	}
+}
+
+func TestClient_ReportNodeOnlineUsers_RejectsInvalidPayload(t *testing.T) {
+	tests := []struct {
+		name string
+		data map[int][]string
+	}{
+		{name: "zero uid", data: map[int][]string{0: {"203.0.113.1_1"}}},
+		{name: "negative uid", data: map[int][]string{-1: {"203.0.113.1_1"}}},
+		{name: "empty users", data: map[int][]string{1: {}}},
+		{name: "empty user entry", data: map[int][]string{1: {""}}},
+		{name: "invalid ip", data: map[int][]string{1: {"not-ip_1"}}},
+		{name: "empty suffix", data: map[int][]string{1: {"203.0.113.1_"}}},
+		{name: "empty ip", data: map[int][]string{1: {"_1"}}},
+		{name: "multiple separators", data: map[int][]string{1: {"203.0.113.1_1_2"}}},
+		{name: "non-numeric suffix", data: map[int][]string{1: {"203.0.113.1_bad"}}},
+		{name: "blank suffix", data: map[int][]string{1: {"203.0.113.1_  "}}},
+		{name: "leading space in ip", data: map[int][]string{1: {" 203.0.113.1_1"}}},
+		{name: "leading space in suffix", data: map[int][]string{1: {"203.0.113.1_ 1"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+
+			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+			err := client.ReportNodeOnlineUsers(context.Background(), tt.data)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if called {
+				t.Fatal("server was called for invalid payload")
+			}
+		})
+	}
+}
+
 func TestClient_ReportUserTraffic_PostsPushPayload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != apiPushPath {
@@ -965,24 +1038,40 @@ func TestClient_GetAliveList_ParseError(t *testing.T) {
 }
 
 func TestClient_GetAliveList_Empty(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"alive": {}}`))
-	}))
-	defer server.Close()
-
-	client := New(&Config{
-		APIHost:  server.URL,
-		Key:      "test-token",
-		NodeID:   1,
-		NodeType: "vless",
-		Timeout:  1,
-	})
-
-	alive, err := client.GetAliveList(context.Background())
-	if err != nil {
-		t.Fatalf("GetAliveList failed: %v", err)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "empty object", body: `{"alive": {}}`},
+		{name: "missing alive", body: `{}`},
+		{name: "null alive", body: `{"alive": null}`},
 	}
-	if len(alive) != 0 {
-		t.Errorf("expected empty map, got %d entries", len(alive))
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			client := New(&Config{
+				APIHost:  server.URL,
+				Key:      "test-token",
+				NodeID:   1,
+				NodeType: "vless",
+				Timeout:  1,
+			})
+
+			alive, err := client.GetAliveList(context.Background())
+			if err != nil {
+				t.Fatalf("GetAliveList failed: %v", err)
+			}
+			if alive == nil {
+				t.Fatal("alive map is nil")
+			}
+			if len(alive) != 0 {
+				t.Errorf("expected empty map, got %d entries", len(alive))
+			}
+		})
 	}
 }
