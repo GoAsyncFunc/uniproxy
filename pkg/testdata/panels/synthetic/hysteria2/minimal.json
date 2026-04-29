@@ -1,0 +1,9 @@
+{
+  "server_port": 8443,
+  "server_name": "hy2.example",
+  "version": 2,
+  "ignore_client_bandwidth": true,
+  "up_mbps": 100,
+  "down_mbps": 200,
+  "obfs": "salamander"
+}

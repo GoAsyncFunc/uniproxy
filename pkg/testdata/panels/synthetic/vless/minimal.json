@@ -1,0 +1,6 @@
+{
+  "server_port": 443,
+  "network": "tcp",
+  "tls": 0,
+  "encryption": "none"
+}

@@ -1,0 +1,5 @@
+{
+  "server_port": 10086,
+  "network": "tcp",
+  "tls": 0
+}

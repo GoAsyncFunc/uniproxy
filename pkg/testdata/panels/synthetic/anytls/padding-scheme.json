@@ -1,0 +1,5 @@
+{
+  "server_port": 443,
+  "server_name": "anytls.example",
+  "padding_scheme": ["stop=8", "0=30-30"]
+}

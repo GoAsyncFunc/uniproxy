@@ -1,0 +1,30 @@
+{
+  "base_config": {
+    "pull_interval": 60,
+    "push_interval": 60
+  },
+  "encryption": "",
+  "encryption_settings": {
+    "mode": "",
+    "private_key": "fixture-private-key",
+    "server_padding": "",
+    "ticket": ""
+  },
+  "flow": "xtls-rprx-vision",
+  "host": "example.com",
+  "network": "tcp",
+  "networkSettings": null,
+  "routes": null,
+  "server_name": "example.com",
+  "server_port": 8443,
+  "tls": 2,
+  "tls_settings": {
+    "dest": "",
+    "mldsa65Seed": "",
+    "private_key": "fixture-private-key",
+    "server_name": "example.com",
+    "server_port": "443",
+    "short_id": "fixture-short-id",
+    "xver": "0"
+  }
+}

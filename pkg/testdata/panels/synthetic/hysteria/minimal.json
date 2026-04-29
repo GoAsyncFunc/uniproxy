@@ -1,0 +1,8 @@
+{
+  "server_port": 8443,
+  "server_name": "hy.example",
+  "version": 1,
+  "up_mbps": 100,
+  "down_mbps": 200,
+  "obfs": "secret"
+}

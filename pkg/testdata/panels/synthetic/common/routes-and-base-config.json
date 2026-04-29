@@ -1,0 +1,37 @@
+{
+  "server_port": 443,
+  "routes": [
+    {
+      "id": 1,
+      "match": "regexp:.*ads.*, protocol:bittorrent",
+      "action": "block"
+    },
+    {
+      "id": 2,
+      "match": "main,{\"servers\":[\"1.1.1.1\",\"8.8.8.8\"]}",
+      "action": "dns"
+    },
+    {
+      "id": 3,
+      "match": ["domain:example.com", "geosite:cn"],
+      "action": "route",
+      "action_value": "direct"
+    },
+    {
+      "id": 4,
+      "match": "0.0.0.0/0",
+      "action": "route_ip",
+      "action_value": "proxy"
+    },
+    {
+      "id": 5,
+      "match": "fallback",
+      "action": "default_out",
+      "action_value": "direct"
+    }
+  ],
+  "base_config": {
+    "push_interval": "60",
+    "pull_interval": 60
+  }
+}

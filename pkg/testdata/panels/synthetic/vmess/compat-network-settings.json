@@ -1,0 +1,10 @@
+{
+  "server_port": 10086,
+  "network": "tcp",
+  "networkSettings": {
+    "header": {
+      "type": "none"
+    }
+  },
+  "tls": 1
+}

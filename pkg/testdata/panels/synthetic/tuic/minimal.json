@@ -1,0 +1,6 @@
+{
+  "server_port": 8443,
+  "server_name": "tuic.example",
+  "congestion_control": "bbr",
+  "zero_rtt_handshake": true
+}

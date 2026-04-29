@@ -1,0 +1,10 @@
+{
+  "server_port": 443,
+  "server_name": "trojan.example",
+  "network": "tcp",
+  "networkSettings": {
+    "header": {
+      "type": "none"
+    }
+  }
+}

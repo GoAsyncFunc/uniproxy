@@ -1,0 +1,42 @@
+{
+  "base_config": {
+    "pull_interval": 60,
+    "push_interval": 60
+  },
+  "encryption": "",
+  "encryption_settings": {
+    "mode": "",
+    "private_key": "fixture-private-key",
+    "server_padding": "",
+    "ticket": ""
+  },
+  "flow": "",
+  "host": "example.com",
+  "network": "xhttp",
+  "networkSettings": {
+    "extra": {
+      "scMaxBufferedPosts": 30,
+      "xPaddingBytes": "100-1000",
+      "xmux": {
+        "hKeepAlivePeriod": 45,
+        "maxConcurrency": "16-32"
+      }
+    },
+    "host": "example.com",
+    "mode": "auto",
+    "path": "/fixture"
+  },
+  "routes": null,
+  "server_name": "example.com",
+  "server_port": 443,
+  "tls": 1,
+  "tls_settings": {
+    "dest": "",
+    "mldsa65Seed": "",
+    "private_key": "fixture-private-key",
+    "server_name": "example.com",
+    "server_port": "",
+    "short_id": "fixture-short-id",
+    "xver": "0"
+  }
+}

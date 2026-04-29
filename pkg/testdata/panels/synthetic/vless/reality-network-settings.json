@@ -1,0 +1,24 @@
+{
+  "server_port": 443,
+  "network": "ws",
+  "networkSettings": {
+    "path": "/vless",
+    "headers": {
+      "Host": "example.com"
+    }
+  },
+  "tls": 2,
+  "flow": "xtls-rprx-vision",
+  "tls_settings": {
+    "server_name": "example.com",
+    "private_key": "fixture-private-key",
+    "short_id": "0123abcd",
+    "server_port": "443"
+  },
+  "encryption": "none",
+  "encryption_settings": {},
+  "base_config": {
+    "push_interval": 60,
+    "pull_interval": 60
+  }
+}
