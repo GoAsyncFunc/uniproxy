@@ -23,8 +23,13 @@ const (
 	ErrorTypeUnknown      ErrorType = "Unknown"      // Unknown Error
 )
 
+const maxAPIErrorMessageBytes = 8 * 1024
+
 var (
+	embeddedBearerQueryPattern = regexp.MustCompile(`(?i)((?:auth|authorization)\s*=\s*Bearer\s+)[^&\s"']+`)
+	embeddedBearerColonPattern = regexp.MustCompile(`(?i)((?:["']?(?:auth|authorization)["']?)\s*:\s*["']?Bearer\s+)[^,"'\r\n\s}]+`)
 	embeddedSecretQueryPattern = regexp.MustCompile(`(?i)(token|key|auth|authorization|access_token|api_key|apikey|client_secret|refresh_token|id_token|secret|password|signature|sig)=([^&\s"']+)`)
+	embeddedSecretColonPattern = regexp.MustCompile(`(?i)(["']?(?:token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|secret|password|signature|sig)["']?\s*:\s*["']?)([^,"'\s}]+)`)
 	embeddedURLUserinfoPattern = regexp.MustCompile(`(?i)(https?://)[^\s/@]+@`)
 )
 
@@ -68,8 +73,19 @@ func sanitizeError(err error) error {
 	return errors.New(redactEmbeddedSecrets(err.Error()))
 }
 
+func sanitizeAPIErrorMessage(message string) string {
+	message = redactEmbeddedSecrets(message)
+	if len(message) <= maxAPIErrorMessageBytes {
+		return message
+	}
+	return message[:maxAPIErrorMessageBytes] + "... [truncated]"
+}
+
 func redactEmbeddedSecrets(value string) string {
 	value = embeddedURLUserinfoPattern.ReplaceAllString(value, "${1}REDACTED@")
+	value = embeddedBearerColonPattern.ReplaceAllString(value, "${1}REDACTED")
+	value = embeddedBearerQueryPattern.ReplaceAllString(value, "${1}REDACTED")
+	value = embeddedSecretColonPattern.ReplaceAllString(value, "${1}REDACTED")
 	return embeddedSecretQueryPattern.ReplaceAllString(value, "$1=REDACTED")
 }
 

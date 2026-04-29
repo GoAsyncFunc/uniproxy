@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	resty "github.com/go-resty/resty/v2"
 )
 
 type captureRestyLogger struct {
@@ -193,6 +195,148 @@ func TestClient_CheckResponseNilResponseReturnsNetworkError(t *testing.T) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || !apiErr.IsNetworkError() {
 		t.Fatalf("expected network APIError, got %T: %v", err, err)
+	}
+}
+
+func TestClient_CheckResponseRedactsAndTruncatesErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("token=secret-token&node_id=1\n" + strings.Repeat("x", 12*1024)))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, "vless")
+
+	_, err := client.GetAliveList(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	got := err.Error()
+	if strings.Contains(got, "secret-token") {
+		t.Fatalf("error leaked token: %q", got)
+	}
+	if !strings.Contains(got, "token=REDACTED") {
+		t.Fatalf("error = %q, want redacted token marker", got)
+	}
+	if len(got) > 9*1024 {
+		t.Fatalf("error length = %d, want truncated error", len(got))
+	}
+}
+
+func TestClient_CheckResponseRedactsJSONAndHeaderSecrets(t *testing.T) {
+	body := strings.Join([]string{
+		`{"token":"secret-token","client_secret":"client-secret","message":"failed"}`,
+		`{"authorization":"Bearer quoted-bearer-secret"}`,
+		`{"Authorization":"Bearer upper-bearer-secret"}`,
+		"Authorization: Bearer bearer-secret",
+		"X-Api-Key: api-key-secret",
+		"authorization=Bearer form-secret",
+	}, "\n")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, "vless")
+
+	_, err := client.GetAliveList(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	got := err.Error()
+	for _, secret := range []string{"secret-token", "client-secret", "quoted-bearer-secret", "upper-bearer-secret", "bearer-secret", "api-key-secret", "form-secret"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("error leaked %q in %q", secret, got)
+		}
+	}
+	if !strings.Contains(got, "message") {
+		t.Fatalf("error = %q, want non-secret message preserved", got)
+	}
+}
+
+func TestClient_CheckResponseRejectsOversizedErrorBodyWithoutIncludingContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(strings.Repeat("x", maxResponseBodyBytes) + "token=secret-token"))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, "vless")
+
+	_, err := client.GetAliveList(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "response body too large") {
+		t.Fatalf("error = %q, want response body too large", got)
+	}
+	if strings.Contains(got, "secret-token") {
+		t.Fatalf("error leaked oversized body secret: %q", got)
+	}
+	if len(got) > 1024 {
+		t.Fatalf("error length = %d, want no oversized body content", len(got))
+	}
+}
+
+func TestClient_RejectsOversizedResponseBody(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		call func(*Client) error
+	}{
+		{
+			name: "node config",
+			path: apiConfigPath,
+			call: func(client *Client) error {
+				_, err := client.GetNodeInfo(context.Background())
+				return err
+			},
+		},
+		{
+			name: "user list",
+			path: apiUserPath,
+			call: func(client *Client) error {
+				_, err := client.GetUserList(context.Background())
+				return err
+			},
+		},
+		{
+			name: "alive list",
+			path: apiAliveListPath,
+			call: func(client *Client) error {
+				_, err := client.GetAliveList(context.Background())
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tt.path {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				_, _ = w.Write([]byte(strings.Repeat("x", maxResponseBodyBytes+1)))
+			}))
+			defer server.Close()
+
+			client := newTestClient(t, server.URL, "vless")
+
+			err := tt.call(client)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "response body too large") {
+				t.Fatalf("error = %q, want response body too large", err.Error())
+			}
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || !errors.Is(apiErr.Err, resty.ErrResponseBodyTooLarge) {
+				t.Fatalf("error = %T: %v, want wrapped resty.ErrResponseBodyTooLarge", err, err)
+			}
+		})
 	}
 }
 

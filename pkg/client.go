@@ -30,16 +30,17 @@ type Config struct {
 }
 
 const (
-	apiConfigPath     = "/api/v1/server/UniProxy/config"
-	apiUserPath       = "/api/v1/server/UniProxy/user"
-	apiPushPath       = "/api/v1/server/UniProxy/push"
-	apiAlivePath      = "/api/v1/server/UniProxy/alive"
-	apiAliveListPath  = "/api/v1/server/UniProxy/alivelist"
-	headerIfNoneMatch = "If-None-Match"
-	headerETag        = "ETag"
-	contentTypeJSON   = "application/json"
-	getRetryCount     = 2
-	getRetryBackoff   = 10 * time.Millisecond
+	apiConfigPath        = "/api/v1/server/UniProxy/config"
+	apiUserPath          = "/api/v1/server/UniProxy/user"
+	apiPushPath          = "/api/v1/server/UniProxy/push"
+	apiAlivePath         = "/api/v1/server/UniProxy/alive"
+	apiAliveListPath     = "/api/v1/server/UniProxy/alivelist"
+	headerIfNoneMatch    = "If-None-Match"
+	headerETag           = "ETag"
+	contentTypeJSON      = "application/json"
+	getRetryCount        = 2
+	getRetryBackoff      = 10 * time.Millisecond
+	maxResponseBodyBytes = 8 * 1024 * 1024
 )
 
 func ipv4FirstTransport() *http.Transport {
@@ -129,6 +130,7 @@ func New(c *Config) *Client {
 	}
 
 	client.SetRetryCount(0)
+	client.SetResponseBodyLimit(maxResponseBodyBytes)
 	if c.Timeout > 0 {
 		client.SetTimeout(time.Duration(c.Timeout) * time.Second)
 	} else {
@@ -205,22 +207,40 @@ func (c *Client) CachedUserList() []UserInfo {
 	return cloneUserInfos(c.userList.Users)
 }
 
+func newRequestError(path string, err error) *APIError {
+	if errors.Is(err, resty.ErrResponseBodyTooLarge) {
+		return NewNetworkError("response body too large", path, err)
+	}
+	return NewNetworkError(fmt.Sprintf("request %s failed", path), path, err)
+}
+
 func (c *Client) checkResponse(r *resty.Response, path string, err error) error {
 	if err != nil {
-		return NewNetworkError(fmt.Sprintf("request %s failed", path), path, err)
+		return newRequestError(path, err)
 	}
 	if r == nil {
 		return NewNetworkError(fmt.Sprintf("request %s returned nil response", path), path, errors.New("nil response"))
 	}
 	if r.StatusCode() >= 400 {
+		message := "response body too large"
+		if len(r.Body()) <= maxResponseBodyBytes {
+			message = sanitizeAPIErrorMessage(string(r.Body()))
+		}
 		return NewAPIErrorFromStatusCode(
 			r.StatusCode(),
-			string(r.Body()),
+			message,
 			path,
 			nil,
 		)
 	}
 	return nil
+}
+
+func checkResponseBodySize(path string, body []byte) error {
+	if len(body) <= maxResponseBodyBytes {
+		return nil
+	}
+	return NewParseError("response body too large", fmt.Errorf("%s response body is %d bytes, limit is %d", path, len(body), maxResponseBodyBytes))
 }
 
 func refreshETag(current *string, newETag string) {
@@ -286,7 +306,7 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 	})
 
 	if err != nil {
-		return nil, NewNetworkError("request failed", apiConfigPath, err)
+		return nil, newRequestError(apiConfigPath, err)
 	}
 
 	if r.StatusCode() == 304 {
@@ -299,6 +319,9 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 
 	if r.Body() == nil {
 		return nil, NewNetworkError("received nil response body", apiConfigPath, nil)
+	}
+	if err := checkResponseBodySize(apiConfigPath, r.Body()); err != nil {
+		return nil, err
 	}
 
 	hash := sha256.Sum256(r.Body())
@@ -367,7 +390,7 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 	})
 
 	if err != nil {
-		return nil, NewNetworkError("request failed", apiUserPath, err)
+		return nil, newRequestError(apiUserPath, err)
 	}
 
 	if r.StatusCode() == 304 {
@@ -375,6 +398,9 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 	}
 
 	if err = c.checkResponse(r, apiUserPath, nil); err != nil {
+		return nil, err
+	}
+	if err := checkResponseBodySize(apiUserPath, r.Body()); err != nil {
 		return nil, err
 	}
 
@@ -456,10 +482,13 @@ func (c *Client) GetAliveList(ctx context.Context) (map[int]int, error) {
 	r, err := c.getWithRetry(ctx, apiAliveListPath, nil)
 
 	if err != nil {
-		return nil, NewNetworkError("request failed", apiAliveListPath, err)
+		return nil, newRequestError(apiAliveListPath, err)
 	}
 
 	if err = c.checkResponse(r, apiAliveListPath, nil); err != nil {
+		return nil, err
+	}
+	if err := checkResponseBodySize(apiAliveListPath, r.Body()); err != nil {
 		return nil, err
 	}
 
