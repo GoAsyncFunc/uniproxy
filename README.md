@@ -49,7 +49,9 @@ func main() {
 }
 ```
 
-`pkg.New` remains available for compatibility when the configuration has already been validated.
+`pkg.New` remains available for compatibility when the configuration has already been validated, but `pkg.NewWithError` is recommended for new code.
+
+Avoid logging full `NodeInfo` values because protocol settings can include private keys or server keys.
 
 ### 2. Fetch Node Config
 
@@ -59,7 +61,7 @@ if err != nil {
 	log.Fatal(err)
 }
 if config != nil {
-	log.Printf("Node config: %+v", config)
+	log.Printf("Node type=%s port=%d routes=%d", config.Type, config.Common.ServerPort, len(config.Routes))
 } else {
 	log.Println("Config unmodified (304)")
 }

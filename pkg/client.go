@@ -55,16 +55,34 @@ func ipv4FirstTransport() *http.Transport {
 	return transport
 }
 
+type clientConfig struct {
+	apiHost   string
+	apiSendIP string
+	token     string
+	nodeType  string
+	nodeID    int
+}
+
 // Client APIClient create a api client to the panel.
 type Client struct {
-	client           *resty.Client
-	APIHost          string
-	APISendIP        string
-	Token            string
-	NodeType         string
-	NodeId           int
+	client *resty.Client
+	config clientConfig
+
+	// Deprecated: this field is informational; mutating it does not affect client behavior.
+	APIHost string
+	// Deprecated: this field is informational; mutating it does not affect client behavior.
+	APISendIP string
+	// Deprecated: this field is informational; mutating it does not affect client behavior.
+	Token string
+	// Deprecated: this field is informational; mutating it does not affect client behavior.
+	NodeType string
+	// Deprecated: this field is informational; mutating it does not affect client behavior.
+	NodeId int
+
 	nodeMu           sync.Mutex
 	userMu           sync.Mutex
+	nodeRefreshMu    sync.Mutex
+	userRefreshMu    sync.Mutex
 	nodeEtag         string
 	userEtag         string
 	responseBodyHash string
@@ -120,7 +138,7 @@ func New(c *Config) *Client {
 	client.OnError(func(req *resty.Request, err error) {
 		var v *resty.ResponseError
 		if errors.As(err, &v) {
-			log.Error(v.Err)
+			log.Error(sanitizeError(v.Err))
 		}
 	})
 
@@ -138,11 +156,18 @@ func New(c *Config) *Client {
 	})
 
 	if c.Debug {
-		client.SetDebug(true)
+		log.Warn("debug logging is disabled because API tokens are sent as query parameters")
 	}
 
 	return &Client{
-		client:    client,
+		client: client,
+		config: clientConfig{
+			apiHost:   c.APIHost,
+			apiSendIP: c.APISendIP,
+			token:     c.Key,
+			nodeType:  nodeType,
+			nodeID:    c.NodeID,
+		},
 		Token:     c.Key,
 		APIHost:   c.APIHost,
 		APISendIP: c.APISendIP,
@@ -162,9 +187,12 @@ func New(c *Config) *Client {
 	}
 }
 
-// Debug set the client debug for client
+// Debug is disabled because API tokens are sent as query parameters.
+// Deprecated: configure application-level sanitized logging instead.
 func (c *Client) Debug(enable bool) {
-	c.client.SetDebug(enable)
+	if enable {
+		log.Warn("debug logging is disabled because API tokens are sent as query parameters")
+	}
 }
 
 // CachedUserList returns a copy of the cached users.
@@ -246,11 +274,15 @@ func (c *Client) getWithRetry(ctx context.Context, path string, configure func(*
 }
 
 func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
+	c.nodeRefreshMu.Lock()
+	defer c.nodeRefreshMu.Unlock()
+
 	c.nodeMu.Lock()
-	defer c.nodeMu.Unlock()
+	nodeEtag := c.nodeEtag
+	c.nodeMu.Unlock()
 
 	r, err := c.getWithRetry(ctx, apiConfigPath, func(req *resty.Request) {
-		req.SetHeader(headerIfNoneMatch, c.nodeEtag)
+		req.SetHeader(headerIfNoneMatch, nodeEtag)
 	})
 
 	if err != nil {
@@ -273,14 +305,17 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 	newBodyHash := hex.EncodeToString(hash[:])
 	newEtag := r.Header().Get(headerETag)
 
+	c.nodeMu.Lock()
 	if c.responseBodyHash == newBodyHash {
 		refreshETag(&c.nodeEtag, newEtag)
+		c.nodeMu.Unlock()
 		return nil, nil
 	}
+	c.nodeMu.Unlock()
 
 	node = &NodeInfo{
-		Id:   c.NodeId,
-		Type: c.NodeType,
+		Id:   c.config.nodeID,
+		Type: c.config.nodeType,
 		RawDNS: RawDNS{
 			DNSMap:  make(map[string]map[string]interface{}),
 			DNSJson: []byte(""),
@@ -288,37 +323,47 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 	}
 
 	var cm *CommonNode
-	if handler, ok := c.handlers[c.NodeType]; ok {
+	if handler, ok := c.handlers[c.config.nodeType]; ok {
 		cm, err = handler.ParseConfig(node, r.Body())
 	} else {
-		return nil, NewParseError(fmt.Sprintf("unsupported node type: %s", c.NodeType), nil)
+		return nil, NewParseError(fmt.Sprintf("unsupported node type: %s", c.config.nodeType), nil)
 	}
 
 	if err != nil {
-		return nil, NewParseError(fmt.Sprintf("decode %s params error", c.NodeType), err)
+		return nil, NewParseError(fmt.Sprintf("decode %s params error", c.config.nodeType), err)
 	}
 	if err := validateCommonNode(cm); err != nil {
-		return nil, NewParseError(fmt.Sprintf("validate %s params error", c.NodeType), err)
+		return nil, NewParseError(fmt.Sprintf("validate %s params error", c.config.nodeType), err)
 	}
 	if err := validateProtocolSpecificNode(node); err != nil {
-		return nil, NewParseError(fmt.Sprintf("validate %s params error", c.NodeType), err)
+		return nil, NewParseError(fmt.Sprintf("validate %s params error", c.config.nodeType), err)
 	}
 
 	node.ProcessCommonNode(cm)
 
+	c.nodeMu.Lock()
 	c.responseBodyHash = newBodyHash
 	refreshETag(&c.nodeEtag, newEtag)
+	c.nodeMu.Unlock()
 
 	return node, nil
 }
 
 // GetUserList will pull user from v2board
 func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
+	c.userRefreshMu.Lock()
+	defer c.userRefreshMu.Unlock()
+
 	c.userMu.Lock()
-	defer c.userMu.Unlock()
+	userEtag := c.userEtag
+	cachedUsers := []UserInfo(nil)
+	if c.userList != nil {
+		cachedUsers = cloneUserInfos(c.userList.Users)
+	}
+	c.userMu.Unlock()
 
 	r, err := c.getWithRetry(ctx, apiUserPath, func(req *resty.Request) {
-		req.SetHeader(headerIfNoneMatch, c.userEtag)
+		req.SetHeader(headerIfNoneMatch, userEtag)
 	})
 
 	if err != nil {
@@ -326,10 +371,7 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 	}
 
 	if r.StatusCode() == 304 {
-		if c.userList != nil {
-			return cloneUserInfos(c.userList.Users), nil
-		}
-		return nil, nil
+		return cachedUsers, nil
 	}
 
 	if err = c.checkResponse(r, apiUserPath, nil); err != nil {
@@ -339,13 +381,18 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 	hash := sha256.Sum256(r.Body())
 	newHash := hex.EncodeToString(hash[:])
 	newEtag := r.Header().Get(headerETag)
+
+	c.userMu.Lock()
 	if c.userBodyHash == newHash {
 		refreshETag(&c.userEtag, newEtag)
+		cachedUsers = nil
 		if c.userList != nil {
-			return cloneUserInfos(c.userList.Users), nil
+			cachedUsers = cloneUserInfos(c.userList.Users)
 		}
-		return nil, nil
+		c.userMu.Unlock()
+		return cachedUsers, nil
 	}
+	c.userMu.Unlock()
 
 	userlist := &UserListBody{}
 	if err := json.Unmarshal(r.Body(), userlist); err != nil {
@@ -355,9 +402,11 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 		return nil, NewParseError("validate user list error", err)
 	}
 
+	c.userMu.Lock()
 	refreshETag(&c.userEtag, newEtag)
 	c.userBodyHash = newHash
 	c.userList = userlist
+	c.userMu.Unlock()
 
 	return cloneUserInfos(userlist.Users), nil
 }

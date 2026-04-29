@@ -1,13 +1,17 @@
 package pkg
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
 func validateConfig(c *Config) error {
 	if c == nil {
@@ -54,6 +58,9 @@ func validateUserList(userlist *UserListBody) error {
 		if strings.TrimSpace(user.Uuid) == "" {
 			return fmt.Errorf("user uuid is required for id %d", user.Id)
 		}
+		if !uuidPattern.MatchString(user.Uuid) {
+			return fmt.Errorf("user uuid is invalid for id %d: %s", user.Id, user.Uuid)
+		}
 		if user.SpeedLimit < 0 {
 			return fmt.Errorf("user speed_limit must be non-negative for id %d", user.Id)
 		}
@@ -74,6 +81,87 @@ func validateCommonNode(cm *CommonNode) error {
 	}
 	if cm.ServerPort <= 0 || cm.ServerPort > 65535 {
 		return fmt.Errorf("server_port must be between 1 and 65535: %d", cm.ServerPort)
+	}
+	return validateRoutes(cm.Routes)
+}
+
+func validateRoutes(routes []Route) error {
+	for i := range routes {
+		if err := validateRoute(routes[i]); err != nil {
+			return fmt.Errorf("route %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func validateRoute(routeConfig Route) error {
+	matches := routeConfig.Matches()
+	switch routeConfig.Action {
+	case RouteActionBlock, RouteActionBlockIP, RouteActionBlockPort, RouteActionProtocol:
+		if len(matches) == 0 {
+			return fmt.Errorf("%s route requires match", routeConfig.Action)
+		}
+	case RouteActionDNS:
+		return validateDNSRoute(routeConfig)
+	case RouteActionRoute, RouteActionRouteIP, RouteActionDefaultOut:
+		if routeConfig.Action != RouteActionDefaultOut && len(matches) == 0 {
+			return fmt.Errorf("%s route requires match", routeConfig.Action)
+		}
+		if strings.TrimSpace(routeConfig.ActionValue) == "" {
+			return fmt.Errorf("%s route requires action_value", routeConfig.Action)
+		}
+	default:
+		return fmt.Errorf("unsupported action %q", routeConfig.Action)
+	}
+	return nil
+}
+
+func validateDNSRoute(routeConfig Route) error {
+	matches := routeConfig.DNSMatches()
+	if len(matches) == 0 {
+		return errors.New("dns route requires match")
+	}
+	if matches[0] == "main" {
+		if len(matches) < 2 || !json.Valid([]byte(strings.Join(matches[1:], ""))) {
+			return errors.New("main dns route requires valid json")
+		}
+		return nil
+	}
+	value := strings.TrimSpace(routeConfig.ActionValue)
+	if value == "" {
+		return errors.New("dns route requires action_value")
+	}
+	if host, port, err := net.SplitHostPort(value); err == nil {
+		if err := validateDNSHost(host); err != nil {
+			return fmt.Errorf("invalid dns action_value: %q", routeConfig.ActionValue)
+		}
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber <= 0 || portNumber > 65535 {
+			return fmt.Errorf("invalid dns action_value: %q", routeConfig.ActionValue)
+		}
+		return nil
+	}
+	if err := validateDNSHost(value); err != nil {
+		return fmt.Errorf("invalid dns action_value: %q", routeConfig.ActionValue)
+	}
+	return nil
+}
+
+func validateDNSHost(value string) error {
+	if value == "" {
+		return errors.New("dns host is empty")
+	}
+	if net.ParseIP(value) != nil {
+		return nil
+	}
+	if strings.ContainsAny(value, " \t\r\n/?#@") {
+		return fmt.Errorf("invalid dns host: %q", value)
+	}
+	if strings.Trim(value, ".") == "" {
+		return fmt.Errorf("invalid dns host: %q", value)
+	}
+	if _, err := url.ParseRequestURI("//" + value); err != nil {
+		return fmt.Errorf("invalid dns host: %q", value)
 	}
 	return nil
 }

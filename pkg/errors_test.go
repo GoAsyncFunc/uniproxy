@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,75 @@ func TestAPIError_Error(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.apiError.Error(); got != tt.want {
 				t.Errorf("APIError.Error() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAPIError_ErrorRedactsSensitiveQueryValues(t *testing.T) {
+	err := NewNetworkError(
+		"request failed",
+		"https://api.example.com/config?token=secret-token&key=secret-key&auth=secret-auth&authorization=secret-bearer&node_id=1",
+		nil,
+	)
+
+	got := err.Error()
+	for _, secret := range []string{"secret-token", "secret-key", "secret-auth", "secret-bearer"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("error leaked %q in %q", secret, got)
+		}
+	}
+	for _, redacted := range []string{"token=REDACTED", "key=REDACTED", "auth=REDACTED", "authorization=REDACTED", "node_id=1"} {
+		if !strings.Contains(got, redacted) {
+			t.Fatalf("error = %q, want to contain %q", got, redacted)
+		}
+	}
+}
+
+func TestAPIError_ErrorRedactsUserInfoAndCommonSecretQueryValues(t *testing.T) {
+	err := NewNetworkError(
+		"request failed",
+		"https://user:password@example.com/config?access_token=aaa111&api_key=bbb222&client_secret=ccc333&password=ddd444&sig=eee555&node_id=1",
+		nil,
+	)
+
+	got := err.Error()
+	for _, secret := range []string{"user:password", "aaa111", "bbb222", "ccc333", "ddd444", "eee555"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("error leaked %q in %q", secret, got)
+		}
+	}
+	if !strings.Contains(got, "node_id=1") {
+		t.Fatalf("error = %q, want node_id preserved", got)
+	}
+}
+
+func TestSanitizeErrorRedactsEmbeddedSecrets(t *testing.T) {
+	tests := []struct {
+		name   string
+		error  error
+		secret string
+	}{
+		{
+			name:   "username password userinfo",
+			error:  errors.New(`Get "https://user:password@api.example.com/path?token=secret-token&node_id=1": connection refused`),
+			secret: "user:password",
+		},
+		{
+			name:   "username only userinfo",
+			error:  errors.New(`Get "https://secret-token@api.example.com/path?node_id=1": connection refused`),
+			secret: "secret-token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeError(tt.error).Error()
+			if strings.Contains(got, tt.secret) {
+				t.Fatalf("error leaked %q in %q", tt.secret, got)
+			}
+			if !strings.Contains(got, "https://REDACTED@api.example.com") || !strings.Contains(got, "node_id=1") {
+				t.Fatalf("error = %q", got)
 			}
 		})
 	}

@@ -121,6 +121,37 @@ func TestIntervalToTime(t *testing.T) {
 	}
 }
 
+func TestValidateCommonNodeRejectsInvalidRoutes(t *testing.T) {
+	tests := []struct {
+		name string
+		node *CommonNode
+	}{
+		{name: "unknown action", node: &CommonNode{ServerPort: 443, Routes: []Route{{Action: "unknown", Match: []string{"domain:example.com"}}}}},
+		{name: "empty block match", node: &CommonNode{ServerPort: 443, Routes: []Route{{Action: RouteActionBlock}}}},
+		{name: "invalid dns action value", node: &CommonNode{ServerPort: 443, Routes: []Route{{Action: RouteActionDNS, Match: []string{"domain:example.com"}, ActionValue: "not a host name"}}}},
+		{name: "invalid dns host port userinfo", node: &CommonNode{ServerPort: 443, Routes: []Route{{Action: RouteActionDNS, Match: []string{"domain:example.com"}, ActionValue: "user@example.com:53"}}}},
+		{name: "invalid dns host port path", node: &CommonNode{ServerPort: 443, Routes: []Route{{Action: RouteActionDNS, Match: []string{"domain:example.com"}, ActionValue: "example.com/path:53"}}}},
+		{name: "invalid dns host port port", node: &CommonNode{ServerPort: 443, Routes: []Route{{Action: RouteActionDNS, Match: []string{"domain:example.com"}, ActionValue: "example.com:70000"}}}},
+		{name: "invalid main dns json", node: &CommonNode{ServerPort: 443, Routes: []Route{{Action: RouteActionDNS, Match: `main,{invalid-json}`}}}},
+		{name: "empty route action value", node: &CommonNode{ServerPort: 443, Routes: []Route{{Action: RouteActionRoute, Match: []string{"domain:example.com"}}}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateCommonNode(tt.node); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestValidateUserListRejectsInvalidUUID(t *testing.T) {
+	err := validateUserList(&UserListBody{Users: []UserInfo{{Id: 1, Uuid: "not-a-uuid"}}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestProcessCommonNodePreservesRoutesAndLegacyRules(t *testing.T) {
 	node := &NodeInfo{RawDNS: RawDNS{DNSMap: map[string]map[string]interface{}{}}}
 	common := &CommonNode{

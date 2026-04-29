@@ -1,8 +1,12 @@
 package pkg
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
 )
 
 // ErrorType defines the type of error
@@ -19,6 +23,11 @@ const (
 	ErrorTypeUnknown      ErrorType = "Unknown"      // Unknown Error
 )
 
+var (
+	embeddedSecretQueryPattern = regexp.MustCompile(`(?i)(token|key|auth|authorization|access_token|api_key|apikey|client_secret|refresh_token|id_token|secret|password|signature|sig)=([^&\s"']+)`)
+	embeddedURLUserinfoPattern = regexp.MustCompile(`(?i)(https?://)[^\s/@]+@`)
+)
+
 // APIError custom API error type
 type APIError struct {
 	StatusCode int       // HTTP Status Code
@@ -31,9 +40,46 @@ type APIError struct {
 // Error implements error interface
 func (e *APIError) Error() string {
 	if e.URL != "" {
-		return fmt.Sprintf("[%d] %s: %s (URL: %s)", e.StatusCode, e.Type, e.Message, e.URL)
+		return fmt.Sprintf("[%d] %s: %s (URL: %s)", e.StatusCode, e.Type, e.Message, redactURL(e.URL))
 	}
 	return fmt.Sprintf("[%d] %s: %s", e.StatusCode, e.Type, e.Message)
+}
+
+func redactURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return redactEmbeddedSecrets(rawURL)
+	}
+	parsed.User = nil
+	values := parsed.Query()
+	for key := range values {
+		if isSensitiveQueryKey(key) {
+			values.Set(key, "REDACTED")
+		}
+	}
+	parsed.RawQuery = values.Encode()
+	return parsed.String()
+}
+
+func sanitizeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(redactEmbeddedSecrets(err.Error()))
+}
+
+func redactEmbeddedSecrets(value string) string {
+	value = embeddedURLUserinfoPattern.ReplaceAllString(value, "${1}REDACTED@")
+	return embeddedSecretQueryPattern.ReplaceAllString(value, "$1=REDACTED")
+}
+
+func isSensitiveQueryKey(key string) bool {
+	switch strings.ToLower(key) {
+	case "token", "key", "auth", "authorization", "access_token", "api_key", "apikey", "client_secret", "refresh_token", "id_token", "secret", "password", "signature", "sig":
+		return true
+	default:
+		return false
+	}
 }
 
 // Unwrap implements errors.Unwrap interface

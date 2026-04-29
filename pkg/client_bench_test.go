@@ -108,7 +108,7 @@ func benchmarkUserListBody(count int) string {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		fmt.Fprintf(&b, `{"id":%d,"uuid":"uuid-%d","speed_limit":0,"device_limit":0}`, i+1, i+1)
+		fmt.Fprintf(&b, `{"id":%d,"uuid":"550e8400-e29b-41d4-a716-%012d","speed_limit":0,"device_limit":0}`, i+1, i+1)
 	}
 	b.WriteString(`]}`)
 	return b.String()

@@ -25,8 +25,9 @@ This project uses a custom `APIError` type to handle various errors during API c
 package main
 
 import (
-    "fmt"
+    "context"
     "errors"
+    "fmt"
     
     "github.com/GoAsyncFunc/uniproxy/pkg"
 )
@@ -34,19 +35,25 @@ import (
 func main() {
     config := &pkg.Config{
         APIHost: "https://api.example.com",
-        Token:   "your-token",
+        Key:      "your-token",
+        NodeID:   1,
+        NodeType: "vless",
     }
     
-    client := pkg.New(config)
-    
-    // Call API
-    users, err := client.Users(1, pkg.VMess)
+    client, err := pkg.NewWithError(config)
     if err != nil {
         handleError(err)
         return
     }
     
-    fmt.Printf("Fetched %d users\n", len(*users))
+    // Call API
+    users, err := client.GetUserList(context.Background())
+    if err != nil {
+        handleError(err)
+        return
+    }
+    
+    fmt.Printf("Fetched %d users\n", len(users))
 }
 
 func handleError(err error) {
@@ -115,7 +122,7 @@ if apiErr.IsNotModified() {
 ```go
 switch apiErr.StatusCode {
 case 401:
-    fmt.Println("Authentication failed, check Token")
+    fmt.Println("Authentication failed, check Key")
 case 403:
     fmt.Println("Permission denied")
 case 404:
@@ -138,7 +145,7 @@ func callAPIWithRetry(client *pkg.Client) error {
     maxRetries := 3
     
     for i := 0; i < maxRetries; i++ {
-        users, err := client.Users(1, pkg.VMess)
+        users, err := client.GetUserList(context.Background())
         if err == nil {
             // Success
             return nil
@@ -177,12 +184,7 @@ import "syscall"
 // Example: Check for specific underlying error
 var apiErr *pkg.APIError
 if errors.As(err, &apiErr) {
-    // Get original error
-    if apiErr.Err != nil {
-        fmt.Printf("Original error: %v\n", apiErr.Err)
-    }
-    
-    // Use errors.Is to check for specific error
+    // Use errors.Is to check for specific underlying errors without logging raw lower-level error text
     if errors.Is(apiErr, syscall.ECONNREFUSED) {
         fmt.Println("Connection refused")
     }
@@ -199,7 +201,7 @@ func logError(err error) {
             "status_code": apiErr.StatusCode,
             "error_type":  apiErr.Type,
             "message":     apiErr.Message,
-            "url":         apiErr.URL,
+            "error":       apiErr.Error(),
         }
         
         if apiErr.IsServerError() {
@@ -210,10 +212,7 @@ func logError(err error) {
             log.WithFields(fields).Error("Other Error")
         }
         
-        // Log original error (if any)
-        if apiErr.Err != nil {
-            log.WithError(apiErr.Err).Debug("Original Error")
-        }
+        // Avoid logging apiErr.Err directly because lower-level network errors can include raw URLs.
     } else {
         log.WithError(err).Error("Unknown Error")
     }
@@ -227,6 +226,8 @@ The `Error()` method of `APIError` returns formatted error messages:
 - With URL: `[404] ServerError: resource not found (URL: http://api.example.com/users)`
 - Without URL: `[500] ServerError: database connection failed`
 - Network Error: `[0] NetworkError: connection timeout (URL: http://api.example.com)`
+
+Sensitive query parameters such as `token`, `key`, `auth`, and `authorization` are redacted when `APIError.Error()` formats URLs.
 
 ## Creating Custom Errors
 

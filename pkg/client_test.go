@@ -13,6 +13,35 @@ import (
 	"time"
 )
 
+type captureRestyLogger struct {
+	mu  sync.Mutex
+	log strings.Builder
+}
+
+func (l *captureRestyLogger) Errorf(format string, v ...interface{}) {
+	l.write(format, v...)
+}
+
+func (l *captureRestyLogger) Warnf(format string, v ...interface{}) {
+	l.write(format, v...)
+}
+
+func (l *captureRestyLogger) Debugf(format string, v ...interface{}) {
+	l.write(format, v...)
+}
+
+func (l *captureRestyLogger) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.log.String()
+}
+
+func (l *captureRestyLogger) write(format string, v ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, _ = fmt.Fprintf(&l.log, format, v...)
+}
+
 func newTestClient(t *testing.T, apiHost, nodeType string) *Client {
 	t.Helper()
 	client := New(&Config{APIHost: apiHost, Key: "token", NodeID: 1, NodeType: nodeType, Timeout: 1})
@@ -94,7 +123,7 @@ func TestClient_Concurrency(t *testing.T) {
 			_, _ = w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))
 		case "/api/v1/server/UniProxy/user":
 			w.Header().Set("ETag", "456")
-			_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "test-uuid"}]}`))
+			_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440000"}]}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -133,6 +162,25 @@ func TestClient_Concurrency(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestClient_DebugDoesNotLogToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"alive":{"1":1}}`))
+	}))
+	defer server.Close()
+
+	logger := &captureRestyLogger{}
+	client := New(&Config{APIHost: server.URL, Key: "secret-token", NodeID: 1, NodeType: "vless", Debug: true})
+	client.client.SetLogger(logger)
+	client.Debug(true)
+
+	if _, err := client.GetAliveList(context.Background()); err != nil {
+		t.Fatalf("GetAliveList failed: %v", err)
+	}
+	if got := logger.String(); strings.Contains(got, "secret-token") {
+		t.Fatalf("debug logs leaked token: %q", got)
+	}
 }
 
 func TestClient_CheckResponseNilResponseReturnsNetworkError(t *testing.T) {
@@ -174,7 +222,7 @@ func TestClient_PublicMethodsTreatNilContextAsBackground(t *testing.T) {
 		case apiConfigPath:
 			_, _ = w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))
 		case apiUserPath:
-			_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "test-uuid"}]}`))
+			_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440000"}]}`))
 		case apiPushPath, apiAlivePath:
 			w.WriteHeader(http.StatusNoContent)
 		case apiAliveListPath:
@@ -327,7 +375,7 @@ func TestClient_304NotModified(t *testing.T) {
 				return
 			}
 			w.Header().Set("ETag", "etag-2")
-			_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "test-uuid"}]}`))
+			_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440000"}]}`))
 		}
 	}))
 	defer server.Close()
@@ -492,7 +540,7 @@ func TestClient_GetUserList_BodyHashDedup(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.Header().Set("ETag", "etag-"+string(rune('0'+callCount)))
-		_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "u1"}, {"id": 2, "uuid": "u2"}]}`))
+		_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440000"}, {"id": 2, "uuid": "550e8400-e29b-41d4-a716-446655440001"}]}`))
 	}))
 	defer server.Close()
 
@@ -526,13 +574,13 @@ func TestClient_GetUserList_BodyHashDedup(t *testing.T) {
 
 func TestClient_CachedUserListReturnsCopy(t *testing.T) {
 	client := New(&Config{APIHost: "http://127.0.0.1", Key: "token", NodeID: 1, NodeType: "vless"})
-	client.userList = &UserListBody{Users: []UserInfo{{Id: 1, Uuid: "u1"}}}
+	client.userList = &UserListBody{Users: []UserInfo{{Id: 1, Uuid: "550e8400-e29b-41d4-a716-446655440000"}}}
 
 	users := client.CachedUserList()
 	users[0].Uuid = "mutated"
 
-	if client.userList.Users[0].Uuid != "u1" {
-		t.Fatalf("cached uuid = %q, want u1", client.userList.Users[0].Uuid)
+	if client.userList.Users[0].Uuid != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("cached uuid = %q, want 550e8400-e29b-41d4-a716-446655440000", client.userList.Users[0].Uuid)
 	}
 }
 
@@ -549,12 +597,12 @@ func TestClient_GetUserList_RejectsInvalidUsers(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "zero id", body: `{"users": [{"id": 0, "uuid": "u1"}]}`},
-		{name: "negative id", body: `{"users": [{"id": -1, "uuid": "u1"}]}`},
+		{name: "zero id", body: `{"users": [{"id": 0, "uuid": "550e8400-e29b-41d4-a716-446655440000"}]}`},
+		{name: "negative id", body: `{"users": [{"id": -1, "uuid": "550e8400-e29b-41d4-a716-446655440000"}]}`},
 		{name: "empty uuid", body: `{"users": [{"id": 1, "uuid": ""}]}`},
-		{name: "negative speed limit", body: `{"users": [{"id": 1, "uuid": "u1", "speed_limit": -1}]}`},
-		{name: "negative device limit", body: `{"users": [{"id": 1, "uuid": "u1", "device_limit": -1}]}`},
-		{name: "duplicate id", body: `{"users": [{"id": 1, "uuid": "u1"}, {"id": 1, "uuid": "u2"}]}`},
+		{name: "negative speed limit", body: `{"users": [{"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440000", "speed_limit": -1}]}`},
+		{name: "negative device limit", body: `{"users": [{"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440000", "device_limit": -1}]}`},
+		{name: "duplicate id", body: `{"users": [{"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440000"}, {"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440001"}]}`},
 	}
 
 	for _, tt := range tests {
@@ -589,7 +637,7 @@ func TestClient_GetUserList_ReturnsCopyOnFreshAndCachedResponses(t *testing.T) {
 			return
 		}
 		w.Header().Set(headerETag, "etag-1")
-		_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "u1"}]}`))
+		_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440000"}]}`))
 	}))
 	defer server.Close()
 
@@ -611,8 +659,8 @@ func TestClient_GetUserList_ReturnsCopyOnFreshAndCachedResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cached GetUserList failed: %v", err)
 	}
-	if cached[0].Uuid != "u1" {
-		t.Fatalf("cached uuid = %q, want u1", cached[0].Uuid)
+	if cached[0].Uuid != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("cached uuid = %q, want 550e8400-e29b-41d4-a716-446655440000", cached[0].Uuid)
 	}
 }
 
@@ -701,7 +749,7 @@ func TestClient_GetUserList_BodyHashDedupRefreshesETag(t *testing.T) {
 			return
 		}
 		w.Header().Set("ETag", "etag-"+string(rune('0'+callCount)))
-		_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "u1"}]}`))
+		_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440000"}]}`))
 	}))
 	defer server.Close()
 
@@ -736,7 +784,7 @@ func TestClient_GetUserList_BodyHashDedupKeepsETagWhenMissing(t *testing.T) {
 				t.Fatalf("If-None-Match = %q, want etag-1", got)
 			}
 		}
-		_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "u1"}]}`))
+		_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440000"}]}`))
 	}))
 	defer server.Close()
 
@@ -980,7 +1028,7 @@ func TestClient_GetUserList_ParseErrorDoesNotCommitCache(t *testing.T) {
 			return
 		}
 		w.Header().Set("ETag", "good-etag")
-		_, _ = w.Write([]byte(`{"users":[{"id":1,"uuid":"ok"}]}`))
+		_, _ = w.Write([]byte(`{"users":[{"id":1,"uuid":"550e8400-e29b-41d4-a716-446655440000"}]}`))
 	}))
 	defer server.Close()
 
@@ -992,7 +1040,7 @@ func TestClient_GetUserList_ParseErrorDoesNotCommitCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second GetUserList failed: %v", err)
 	}
-	if len(users) != 1 || users[0].Uuid != "ok" {
+	if len(users) != 1 || users[0].Uuid != "550e8400-e29b-41d4-a716-446655440000" {
 		t.Fatalf("users = %#v", users)
 	}
 	if client.userEtag != "good-etag" {
@@ -1016,7 +1064,7 @@ func TestClient_GetUserList_304WithoutCacheReturnsNil(t *testing.T) {
 	}
 }
 
-func TestClient_GetRequestsIncludeAuthAndNodeQueryParams(t *testing.T) {
+func TestClient_GetRequestsUseConstructionSnapshot(t *testing.T) {
 	requestCount := 0
 	var requestErrors []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1037,11 +1085,16 @@ func TestClient_GetRequestsIncludeAuthAndNodeQueryParams(t *testing.T) {
 			requestErrors = append(requestErrors, fmt.Sprintf("second If-None-Match = %q", r.Header.Get(headerIfNoneMatch)))
 		}
 		w.Header().Set(headerETag, "etag-1")
-		_, _ = w.Write([]byte(`{"users":[{"id":1,"uuid":"ok"}]}`))
+		_, _ = w.Write([]byte(`{"users":[{"id":1,"uuid":"550e8400-e29b-41d4-a716-446655440000"}]}`))
 	}))
 	defer server.Close()
 
 	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 7, NodeType: "vless", Timeout: 1})
+	client.Token = "mutated-token"
+	client.NodeId = 99
+	client.NodeType = "vmess"
+	client.APIHost = "http://127.0.0.1:1"
+
 	if _, err := client.GetUserList(context.Background()); err != nil {
 		t.Fatalf("first GetUserList failed: %v", err)
 	}
@@ -1050,6 +1103,87 @@ func TestClient_GetRequestsIncludeAuthAndNodeQueryParams(t *testing.T) {
 	}
 	if len(requestErrors) > 0 {
 		t.Fatalf("request errors: %s", strings.Join(requestErrors, "; "))
+	}
+}
+
+func TestClient_GetNodeInfoUsesConstructionSnapshot(t *testing.T) {
+	var requestErrors []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("node_type"); got != "vless" {
+			requestErrors = append(requestErrors, fmt.Sprintf("node_type query = %q", got))
+		}
+		if got := r.URL.Query().Get("node_id"); got != "7" {
+			requestErrors = append(requestErrors, fmt.Sprintf("node_id query = %q", got))
+		}
+		_, _ = w.Write([]byte(`{"server_port":443,"tls":2,"server_name":"example.com","network":"tcp","encryption":"none"}`))
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 7, NodeType: "vless", Timeout: 1})
+	client.NodeType = "vmess"
+	client.NodeId = 99
+
+	node, err := client.GetNodeInfo(context.Background())
+	if err != nil {
+		t.Fatalf("GetNodeInfo failed: %v", err)
+	}
+	if node.Type != "vless" || node.Id != 7 || node.Vless == nil {
+		t.Fatalf("node = %#v, want construction snapshot vless node 7", node)
+	}
+	if len(requestErrors) > 0 {
+		t.Fatalf("request errors: %s", strings.Join(requestErrors, "; "))
+	}
+}
+
+func TestClient_CachedUserListDoesNotWaitForUserFetch(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() {
+		releaseOnce.Do(func() {
+			close(release)
+		})
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		_, _ = w.Write([]byte(`{"users":[{"id":1,"uuid":"550e8400-e29b-41d4-a716-446655440000"}]}`))
+	}))
+	defer server.Close()
+	defer closeRelease()
+
+	client := newTestClient(t, server.URL, "vless")
+	client.userList = &UserListBody{Users: []UserInfo{{Id: 1, Uuid: "cached"}}}
+
+	fetchDone := make(chan error, 1)
+	go func() {
+		_, err := client.GetUserList(context.Background())
+		fetchDone <- err
+	}()
+	<-started
+
+	cacheDone := make(chan []UserInfo, 1)
+	go func() {
+		cacheDone <- client.CachedUserList()
+	}()
+
+	select {
+	case users := <-cacheDone:
+		if len(users) != 1 || users[0].Uuid != "cached" {
+			t.Fatalf("cached users = %#v", users)
+		}
+		closeRelease()
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("CachedUserList waited for in-flight GetUserList network request")
+	}
+
+	select {
+	case err := <-fetchDone:
+		if err != nil {
+			t.Fatalf("GetUserList failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GetUserList did not finish after release")
 	}
 }
 
