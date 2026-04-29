@@ -1116,6 +1116,12 @@ func TestClient_ReportNodeOnlineUsers_PostsAlivePayload(t *testing.T) {
 		if got := r.Header.Get("Content-Type"); got != contentTypeJSON {
 			t.Fatalf("Content-Type = %q, want %q", got, contentTypeJSON)
 		}
+		if got := r.URL.Query().Get("token"); got != "test-token" {
+			t.Fatalf("token query = %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization header = %q", got)
+		}
 
 		var body map[int][]string
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1222,6 +1228,9 @@ func TestClient_GetRequestsUseConstructionSnapshot(t *testing.T) {
 		if got := r.URL.Query().Get("node_type"); got != "vless" {
 			requestErrors = append(requestErrors, fmt.Sprintf("node_type query = %q", got))
 		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+			requestErrors = append(requestErrors, fmt.Sprintf("Authorization header = %q", got))
+		}
 		if requestCount == 1 && r.Header.Get(headerIfNoneMatch) != "" {
 			requestErrors = append(requestErrors, fmt.Sprintf("first If-None-Match = %q", r.Header.Get(headerIfNoneMatch)))
 		}
@@ -1253,11 +1262,17 @@ func TestClient_GetRequestsUseConstructionSnapshot(t *testing.T) {
 func TestClient_GetNodeInfoUsesConstructionSnapshot(t *testing.T) {
 	var requestErrors []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("token"); got != "token" {
+			requestErrors = append(requestErrors, fmt.Sprintf("token query = %q", got))
+		}
 		if got := r.URL.Query().Get("node_type"); got != "vless" {
 			requestErrors = append(requestErrors, fmt.Sprintf("node_type query = %q", got))
 		}
 		if got := r.URL.Query().Get("node_id"); got != "7" {
 			requestErrors = append(requestErrors, fmt.Sprintf("node_id query = %q", got))
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+			requestErrors = append(requestErrors, fmt.Sprintf("Authorization header = %q", got))
 		}
 		_, _ = w.Write([]byte(`{"server_port":443,"tls":2,"server_name":"example.com","network":"tcp","encryption":"none"}`))
 	}))
@@ -1266,6 +1281,7 @@ func TestClient_GetNodeInfoUsesConstructionSnapshot(t *testing.T) {
 	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 7, NodeType: "vless", Timeout: 1})
 	client.NodeType = "vmess"
 	client.NodeId = 99
+	client.Token = "mutated-token"
 
 	node, err := client.GetNodeInfo(context.Background())
 	if err != nil {
@@ -1483,6 +1499,12 @@ func TestClient_ReportUserTraffic_PostsPushPayload(t *testing.T) {
 		}
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %q, want POST", r.Method)
+		}
+		if got := r.URL.Query().Get("token"); got != "token" {
+			t.Fatalf("token query = %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+			t.Fatalf("Authorization header = %q", got)
 		}
 		var body map[int][]int64
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

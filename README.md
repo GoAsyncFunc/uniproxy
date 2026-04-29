@@ -51,6 +51,8 @@ func main() {
 
 `pkg.New` remains available for compatibility when the configuration has already been validated, but `pkg.NewWithError` is recommended for new code.
 
+By default, v1 sends the node token in both places: the legacy `token` query parameter required by existing UniProxy panels and an `Authorization: Bearer <token>` header for deployments that can read header-based auth. Prefer HTTPS in production because the query token is retained for compatibility.
+
 Avoid logging full `NodeInfo` values because protocol settings can include private keys or server keys.
 
 ### 2. Fetch Node Config

@@ -227,7 +227,7 @@ The `Error()` method of `APIError` returns formatted error messages:
 - Without URL: `[500] ServerError: database connection failed`
 - Network Error: `[0] NetworkError: connection timeout (URL: http://api.example.com)`
 
-Sensitive query parameters such as `token`, `key`, `auth`, and `authorization` are redacted when `APIError.Error()` formats URLs.
+Sensitive query parameters such as `token`, `key`, `auth`, and `authorization` are redacted when `APIError.Error()` formats URLs. API error response bodies are also sanitized for common query, JSON, and bearer-token formats before being surfaced to callers.
 
 ## Creating Custom Errors
 

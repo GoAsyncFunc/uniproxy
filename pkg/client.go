@@ -37,6 +37,7 @@ const (
 	apiAliveListPath     = "/api/v1/server/UniProxy/alivelist"
 	headerIfNoneMatch    = "If-None-Match"
 	headerETag           = "ETag"
+	headerAuthorization  = "Authorization"
 	contentTypeJSON      = "application/json"
 	getRetryCount        = 2
 	getRetryBackoff      = 10 * time.Millisecond
@@ -158,7 +159,7 @@ func New(c *Config) *Client {
 	})
 
 	if c.Debug {
-		log.Warn("debug logging is disabled because API tokens are sent as query parameters")
+		log.Warn("debug logging is disabled because legacy query authentication can expose API tokens")
 	}
 
 	return &Client{
@@ -189,11 +190,11 @@ func New(c *Config) *Client {
 	}
 }
 
-// Debug is disabled because API tokens are sent as query parameters.
+// Debug is disabled because legacy query authentication can expose API tokens.
 // Deprecated: configure application-level sanitized logging instead.
 func (c *Client) Debug(enable bool) {
 	if enable {
-		log.Warn("debug logging is disabled because API tokens are sent as query parameters")
+		log.Warn("debug logging is disabled because legacy query authentication can expose API tokens")
 	}
 }
 
@@ -263,12 +264,19 @@ func normalizeContext(ctx context.Context) context.Context {
 	return ctx
 }
 
+func (c *Client) newRequest(ctx context.Context) *resty.Request {
+	return c.client.R().
+		SetContext(normalizeContext(ctx)).
+		SetHeader(headerAuthorization, "Bearer "+c.config.token).
+		ForceContentType(contentTypeJSON)
+}
+
 func (c *Client) getWithRetry(ctx context.Context, path string, configure func(*resty.Request)) (*resty.Response, error) {
 	ctx = normalizeContext(ctx)
 	var r *resty.Response
 	var err error
 	for attempt := 0; attempt <= getRetryCount; attempt++ {
-		req := c.client.R().SetContext(ctx).ForceContentType(contentTypeJSON)
+		req := c.newRequest(ctx)
 		if configure != nil {
 			configure(req)
 		}
@@ -448,10 +456,8 @@ func (c *Client) ReportUserTraffic(ctx context.Context, userTraffic []UserTraffi
 	for i := range userTraffic {
 		data[userTraffic[i].UID] = []int64{userTraffic[i].Upload, userTraffic[i].Download}
 	}
-	r, err := c.client.R().
-		SetContext(normalizeContext(ctx)).
+	r, err := c.newRequest(ctx).
 		SetBody(data).
-		ForceContentType(contentTypeJSON).
 		Post(apiPushPath)
 
 	return c.checkResponse(r, apiPushPath, err)
@@ -469,10 +475,8 @@ func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]strin
 	if err := validateOnlineUsers(data); err != nil {
 		return err
 	}
-	r, err := c.client.R().
-		SetContext(normalizeContext(ctx)).
+	r, err := c.newRequest(ctx).
 		SetBody(cloneOnlineUsers(data)).
-		ForceContentType(contentTypeJSON).
 		Post(apiAlivePath)
 
 	return c.checkResponse(r, apiAlivePath, err)
