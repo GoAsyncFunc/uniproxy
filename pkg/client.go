@@ -277,7 +277,15 @@ func validateProtocolSpecificNode(node *NodeInfo) error {
 	return nil
 }
 
+func normalizeContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 func (c *Client) getWithRetry(ctx context.Context, path string, configure func(*resty.Request)) (*resty.Response, error) {
+	ctx = normalizeContext(ctx)
 	var r *resty.Response
 	var err error
 	for attempt := 0; attempt <= getRetryCount; attempt++ {
@@ -475,7 +483,7 @@ func (c *Client) ReportUserTraffic(ctx context.Context, userTraffic []UserTraffi
 		data[userTraffic[i].UID] = []int64{userTraffic[i].Upload, userTraffic[i].Download}
 	}
 	r, err := c.client.R().
-		SetContext(ctx).
+		SetContext(normalizeContext(ctx)).
 		SetBody(data).
 		ForceContentType(contentTypeJSON).
 		Post(apiPushPath)
@@ -483,13 +491,21 @@ func (c *Client) ReportUserTraffic(ctx context.Context, userTraffic []UserTraffi
 	return c.checkResponse(r, apiPushPath, err)
 }
 
+func cloneOnlineUsers(data map[int][]string) map[int][]string {
+	cloned := make(map[int][]string, len(data))
+	for uid, users := range data {
+		cloned[uid] = append([]string(nil), users...)
+	}
+	return cloned
+}
+
 func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]string) error {
 	if err := validateOnlineUsers(data); err != nil {
 		return err
 	}
 	r, err := c.client.R().
-		SetContext(ctx).
-		SetBody(data).
+		SetContext(normalizeContext(ctx)).
+		SetBody(cloneOnlineUsers(data)).
 		ForceContentType(contentTypeJSON).
 		Post(apiAlivePath)
 
@@ -516,6 +532,14 @@ func (c *Client) GetAliveList(ctx context.Context) (map[int]int, error) {
 
 	if resp.Alive == nil {
 		return map[int]int{}, nil
+	}
+	for uid, count := range resp.Alive {
+		if uid <= 0 {
+			return nil, NewParseError("decode alive list error", fmt.Errorf("alive uid must be positive: %d", uid))
+		}
+		if count < 0 {
+			return nil, NewParseError("decode alive list error", fmt.Errorf("alive count must be non-negative for uid %d", uid))
+		}
 	}
 
 	return resp.Alive, nil

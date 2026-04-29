@@ -139,6 +139,65 @@ func TestClient_CheckResponseNilResponseReturnsNetworkError(t *testing.T) {
 	}
 }
 
+func TestClient_GetWithRetryTreatsNilContextAsBackgroundOnRetry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vmess", Timeout: 1})
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("GetNodeInfo with nil context panicked: %v", r)
+		}
+	}()
+
+	_, err := client.GetNodeInfo(nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestClient_PublicMethodsTreatNilContextAsBackground(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case apiConfigPath:
+			_, _ = w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))
+		case apiUserPath:
+			_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "test-uuid"}]}`))
+		case apiPushPath, apiAlivePath:
+			w.WriteHeader(http.StatusNoContent)
+		case apiAliveListPath:
+			_, _ = w.Write([]byte(`{"alive": {"1": 1}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vmess", Timeout: 1})
+
+	if _, err := client.GetNodeInfo(nil); err != nil {
+		t.Fatalf("GetNodeInfo with nil context failed: %v", err)
+	}
+	if _, err := client.GetUserList(nil); err != nil {
+		t.Fatalf("GetUserList with nil context failed: %v", err)
+	}
+	if err := client.ReportUserTraffic(nil, []UserTraffic{{UID: 1, Upload: 1, Download: 1}}); err != nil {
+		t.Fatalf("ReportUserTraffic with nil context failed: %v", err)
+	}
+	if err := client.ReportNodeOnlineUsers(nil, map[int][]string{1: {"203.0.113.1_1"}}); err != nil {
+		t.Fatalf("ReportNodeOnlineUsers with nil context failed: %v", err)
+	}
+	alive, err := client.GetAliveList(nil)
+	if err != nil {
+		t.Fatalf("GetAliveList with nil context failed: %v", err)
+	}
+	if alive[1] != 1 {
+		t.Fatalf("alive[1] = %d, want 1", alive[1])
+	}
+}
+
 func TestClient_ReturnsAPIError_OnServerError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -718,6 +777,49 @@ func TestClient_GetWithRetryWaitsBetweenServerErrors(t *testing.T) {
 	}
 }
 
+func TestClient_GetWithRetryReturnsErrorAfterServerErrorRetriesExhausted(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	_, err := client.GetNodeInfo(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if callCount != getRetryCount+1 {
+		t.Fatalf("call count = %d, want %d", callCount, getRetryCount+1)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502 APIError, got %T: %v", err, err)
+	}
+}
+
+func TestClient_GetWithRetryStopsWhenContextCanceledAfterFailedAttempt(t *testing.T) {
+	callCount := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		cancel()
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	_, err := client.GetNodeInfo(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("call count = %d, want 1", callCount)
+	}
+}
+
 func TestClient_ReportNodeOnlineUsers_PostsAlivePayload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != apiAlivePath {
@@ -888,6 +990,21 @@ func TestClient_ReportUserTraffic_RejectsInvalidPayload(t *testing.T) {
 				t.Fatal("server was called for invalid payload")
 			}
 		})
+	}
+}
+
+func TestCloneOnlineUsers_DoesNotShareCallerMapOrSlices(t *testing.T) {
+	data := map[int][]string{1: {"203.0.113.1_1"}}
+
+	cloned := cloneOnlineUsers(data)
+	data[1][0] = "not-ip_1"
+	data[2] = []string{"203.0.113.2_1"}
+
+	if got := cloned[1]; len(got) != 1 || got[0] != "203.0.113.1_1" {
+		t.Fatalf("cloned[1] = %#v", got)
+	}
+	if _, ok := cloned[2]; ok {
+		t.Fatalf("cloned contains later caller map mutation: %#v", cloned)
 	}
 }
 
@@ -1071,6 +1188,35 @@ func TestClient_GetAliveList_Empty(t *testing.T) {
 			}
 			if len(alive) != 0 {
 				t.Errorf("expected empty map, got %d entries", len(alive))
+			}
+		})
+	}
+}
+
+func TestClient_GetAliveList_RejectsInvalidValues(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "negative uid", body: `{"alive": {"-1": 1}}`},
+		{name: "negative count", body: `{"alive": {"1": -1}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+			_, err := client.GetAliveList(context.Background())
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || !apiErr.IsParseError() {
+				t.Fatalf("expected parse APIError, got %T: %v", err, err)
 			}
 		})
 	}
