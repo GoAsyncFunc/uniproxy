@@ -515,21 +515,57 @@ func TestClient_GetUserList_BodyHashDedup(t *testing.T) {
 
 func TestClient_CachedUserListReturnsCopy(t *testing.T) {
 	client := New(&Config{APIHost: "http://127.0.0.1", Key: "token", NodeID: 1, NodeType: "vless"})
-	client.UserList = &UserListBody{Users: []UserInfo{{Id: 1, Uuid: "u1"}}}
+	client.userList = &UserListBody{Users: []UserInfo{{Id: 1, Uuid: "u1"}}}
 
 	users := client.CachedUserList()
 	users[0].Uuid = "mutated"
 
-	if client.UserList.Users[0].Uuid != "u1" {
-		t.Fatalf("cached uuid = %q, want u1", client.UserList.Users[0].Uuid)
+	if client.userList.Users[0].Uuid != "u1" {
+		t.Fatalf("cached uuid = %q, want u1", client.userList.Users[0].Uuid)
 	}
 }
 
 func TestClient_CachedUserListNilCache(t *testing.T) {
 	client := New(&Config{APIHost: "http://127.0.0.1", Key: "token", NodeID: 1, NodeType: "vless"})
-	client.UserList = nil
+	client.userList = nil
 	if users := client.CachedUserList(); users != nil {
 		t.Fatalf("users = %#v, want nil", users)
+	}
+}
+
+func TestClient_GetUserList_RejectsInvalidUsers(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "zero id", body: `{"users": [{"id": 0, "uuid": "u1"}]}`},
+		{name: "negative id", body: `{"users": [{"id": -1, "uuid": "u1"}]}`},
+		{name: "empty uuid", body: `{"users": [{"id": 1, "uuid": ""}]}`},
+		{name: "negative speed limit", body: `{"users": [{"id": 1, "uuid": "u1", "speed_limit": -1}]}`},
+		{name: "negative device limit", body: `{"users": [{"id": 1, "uuid": "u1", "device_limit": -1}]}`},
+		{name: "duplicate id", body: `{"users": [{"id": 1, "uuid": "u1"}, {"id": 1, "uuid": "u2"}]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+			_, err := client.GetUserList(context.Background())
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || !apiErr.IsParseError() {
+				t.Fatalf("expected parse APIError, got %T: %v", err, err)
+			}
+			if cached := client.CachedUserList(); cached != nil {
+				t.Fatalf("cached users = %#v, want nil", cached)
+			}
+		})
 	}
 }
 
@@ -993,6 +1029,35 @@ func TestClient_ReportUserTraffic_RejectsInvalidPayload(t *testing.T) {
 	}
 }
 
+func TestClient_ReportUserTraffic_EmptyPayloadIsNoop(t *testing.T) {
+	tests := []struct {
+		name    string
+		traffic []UserTraffic
+	}{
+		{name: "nil traffic", traffic: nil},
+		{name: "empty traffic", traffic: []UserTraffic{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+
+			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+			if err := client.ReportUserTraffic(context.Background(), tt.traffic); err != nil {
+				t.Fatalf("ReportUserTraffic failed: %v", err)
+			}
+			if called {
+				t.Fatal("server was called for empty traffic")
+			}
+		})
+	}
+}
+
 func TestCloneOnlineUsers_DoesNotShareCallerMapOrSlices(t *testing.T) {
 	data := map[int][]string{1: {"203.0.113.1_1"}}
 
@@ -1013,6 +1078,7 @@ func TestClient_ReportNodeOnlineUsers_RejectsInvalidPayload(t *testing.T) {
 		name string
 		data map[int][]string
 	}{
+		{name: "nil data", data: nil},
 		{name: "zero uid", data: map[int][]string{0: {"203.0.113.1_1"}}},
 		{name: "negative uid", data: map[int][]string{-1: {"203.0.113.1_1"}}},
 		{name: "empty users", data: map[int][]string{1: {}}},
@@ -1045,6 +1111,33 @@ func TestClient_ReportNodeOnlineUsers_RejectsInvalidPayload(t *testing.T) {
 				t.Fatal("server was called for invalid payload")
 			}
 		})
+	}
+}
+
+func TestClient_ReportNodeOnlineUsers_EmptyMapPostsPayload(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.URL.Path != apiAlivePath {
+			t.Fatalf("path = %q, want %q", r.URL.Path, apiAlivePath)
+		}
+		var body map[int][]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if len(body) != 0 {
+			t.Fatalf("body = %#v, want empty map", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	if err := client.ReportNodeOnlineUsers(context.Background(), map[int][]string{}); err != nil {
+		t.Fatalf("ReportNodeOnlineUsers failed: %v", err)
+	}
+	if !called {
+		t.Fatal("server was not called for empty online users")
 	}
 }
 

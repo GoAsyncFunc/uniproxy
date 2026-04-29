@@ -70,9 +70,8 @@ type Client struct {
 	userEtag         string
 	responseBodyHash string
 	userBodyHash     string
-	// Deprecated: use CachedUserList to read cached users without sharing mutable state.
-	UserList *UserListBody
-	handlers map[string]NodeHandler
+	userList         *UserListBody
+	handlers         map[string]NodeHandler
 }
 
 func normalizeNodeType(nodeType string) (string, bool) {
@@ -182,7 +181,7 @@ func New(c *Config) *Client {
 		APISendIP: c.APISendIP,
 		NodeType:  nodeType,
 		NodeId:    c.NodeID,
-		UserList:  &UserListBody{},
+		userList:  &UserListBody{},
 		handlers: map[string]NodeHandler{
 			Shadowsocks: &ShadowsocksHandler{},
 			Vmess:       &VMessHandler{},
@@ -205,10 +204,10 @@ func (c *Client) Debug(enable bool) {
 func (c *Client) CachedUserList() []UserInfo {
 	c.userMu.Lock()
 	defer c.userMu.Unlock()
-	if c.UserList == nil {
+	if c.userList == nil {
 		return nil
 	}
-	return cloneUserInfos(c.UserList.Users)
+	return cloneUserInfos(c.userList.Users)
 }
 
 func (c *Client) checkResponse(r *resty.Response, path string, err error) error {
@@ -240,6 +239,33 @@ func cloneUserInfos(users []UserInfo) []UserInfo {
 		return nil
 	}
 	return append([]UserInfo(nil), users...)
+}
+
+func validateUserList(userlist *UserListBody) error {
+	if userlist == nil {
+		return errors.New("user list is nil")
+	}
+	seen := make(map[int]struct{}, len(userlist.Users))
+	for i := range userlist.Users {
+		user := userlist.Users[i]
+		if user.Id <= 0 {
+			return fmt.Errorf("user id must be positive: %d", user.Id)
+		}
+		if strings.TrimSpace(user.Uuid) == "" {
+			return fmt.Errorf("user uuid is required for id %d", user.Id)
+		}
+		if user.SpeedLimit < 0 {
+			return fmt.Errorf("user speed_limit must be non-negative for id %d", user.Id)
+		}
+		if user.DeviceLimit < 0 {
+			return fmt.Errorf("user device_limit must be non-negative for id %d", user.Id)
+		}
+		if _, ok := seen[user.Id]; ok {
+			return fmt.Errorf("duplicate user id: %d", user.Id)
+		}
+		seen[user.Id] = struct{}{}
+	}
+	return nil
 }
 
 func validateCommonNode(cm *CommonNode) error {
@@ -395,8 +421,8 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 	}
 
 	if r.StatusCode() == 304 {
-		if c.UserList != nil {
-			return cloneUserInfos(c.UserList.Users), nil
+		if c.userList != nil {
+			return cloneUserInfos(c.userList.Users), nil
 		}
 		return nil, nil
 	}
@@ -410,8 +436,8 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 	newEtag := r.Header().Get(headerETag)
 	if c.userBodyHash == newHash {
 		refreshETag(&c.userEtag, newEtag)
-		if c.UserList != nil {
-			return cloneUserInfos(c.UserList.Users), nil
+		if c.userList != nil {
+			return cloneUserInfos(c.userList.Users), nil
 		}
 		return nil, nil
 	}
@@ -420,10 +446,13 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 	if err := json.Unmarshal(r.Body(), userlist); err != nil {
 		return nil, NewParseError("decode user list error", err)
 	}
+	if err := validateUserList(userlist); err != nil {
+		return nil, NewParseError("validate user list error", err)
+	}
 
 	refreshETag(&c.userEtag, newEtag)
 	c.userBodyHash = newHash
-	c.UserList = userlist
+	c.userList = userlist
 
 	return cloneUserInfos(userlist.Users), nil
 }
@@ -446,6 +475,9 @@ func validateUserTraffic(userTraffic []UserTraffic) error {
 }
 
 func validateOnlineUsers(data map[int][]string) error {
+	if data == nil {
+		return errors.New("online user data is nil")
+	}
 	for uid, users := range data {
 		if uid <= 0 {
 			return fmt.Errorf("online user uid must be positive: %d", uid)
@@ -477,6 +509,9 @@ func validateOnlineUsers(data map[int][]string) error {
 func (c *Client) ReportUserTraffic(ctx context.Context, userTraffic []UserTraffic) error {
 	if err := validateUserTraffic(userTraffic); err != nil {
 		return err
+	}
+	if len(userTraffic) == 0 {
+		return nil
 	}
 	data := make(map[int][]int64, len(userTraffic))
 	for i := range userTraffic {
