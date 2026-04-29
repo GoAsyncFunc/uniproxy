@@ -13,6 +13,14 @@ import (
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
+func isLocalHTTPHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func validateConfig(c *Config) error {
 	if c == nil {
 		return errors.New("config is nil")
@@ -29,6 +37,9 @@ func validateConfig(c *Config) error {
 	}
 	if parsed.Host == "" {
 		return errors.New("api host must include host")
+	}
+	if parsed.Scheme == "http" && !isLocalHTTPHost(parsed.Hostname()) {
+		return fmt.Errorf("api host must use https unless host is localhost or loopback: %s", parsed.Scheme)
 	}
 	if strings.TrimSpace(c.Key) == "" {
 		return errors.New("api key is required")

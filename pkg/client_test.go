@@ -96,6 +96,16 @@ func TestNew_NilConfigDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestNewWithError_RejectsRemoteHTTP(t *testing.T) {
+	client, err := NewWithError(&Config{APIHost: "http://example.com", Key: "token", NodeID: 1, NodeType: "vless"})
+	if err == nil {
+		t.Fatalf("expected remote http error, got client %#v", client)
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Fatalf("error = %q, want https guidance", err.Error())
+	}
+}
+
 func TestNewWithError_AcceptsSupportedNodeTypes(t *testing.T) {
 	types := []string{"vmess", "vless", "trojan", "shadowsocks", "hysteria", "hysteria2", "tuic", "anytls", "v2ray", "VLESS"}
 	for _, nodeType := range types {

@@ -1,12 +1,15 @@
 package pkg
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+
+	resty "github.com/go-resty/resty/v2"
 )
 
 // ErrorType defines the type of error
@@ -50,6 +53,10 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("[%d] %s: %s", e.StatusCode, e.Type, e.Message)
 }
 
+func (e *APIError) GoString() string {
+	return fmt.Sprintf("&APIError{StatusCode:%d, Type:%q, Message:%q, URL:%q, Err:%#v}", e.StatusCode, e.Type, e.Message, redactURL(e.URL), e.Err)
+}
+
 func redactURL(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -71,6 +78,42 @@ func sanitizeError(err error) error {
 		return nil
 	}
 	return errors.New(redactEmbeddedSecrets(err.Error()))
+}
+
+type sanitizedWrappedError struct {
+	message                string
+	isContextCanceled      bool
+	isDeadlineExceeded     bool
+	isResponseBodyTooLarge bool
+}
+
+func (e sanitizedWrappedError) Error() string {
+	return e.message
+}
+
+func (e sanitizedWrappedError) Is(target error) bool {
+	switch target {
+	case context.Canceled:
+		return e.isContextCanceled
+	case context.DeadlineExceeded:
+		return e.isDeadlineExceeded
+	case resty.ErrResponseBodyTooLarge:
+		return e.isResponseBodyTooLarge
+	default:
+		return false
+	}
+}
+
+func sanitizeWrappedError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return sanitizedWrappedError{
+		message:                redactEmbeddedSecrets(err.Error()),
+		isContextCanceled:      errors.Is(err, context.Canceled),
+		isDeadlineExceeded:     errors.Is(err, context.DeadlineExceeded),
+		isResponseBodyTooLarge: errors.Is(err, resty.ErrResponseBodyTooLarge),
+	}
 }
 
 func sanitizeAPIErrorMessage(message string) string {
@@ -130,7 +173,7 @@ func NewAPIError(statusCode int, errorType ErrorType, message string, url string
 		Type:       errorType,
 		Message:    message,
 		URL:        url,
-		Err:        err,
+		Err:        sanitizeWrappedError(err),
 	}
 }
 

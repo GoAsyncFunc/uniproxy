@@ -1,11 +1,14 @@
 package pkg
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+
+	resty "github.com/go-resty/resty/v2"
 )
 
 func TestAPIError_Error(t *testing.T) {
@@ -192,13 +195,69 @@ func TestAPIError_Unwrap(t *testing.T) {
 	apiErr := NewNetworkError("network failed", "http://example.com", originalErr)
 
 	unwrapped := apiErr.Unwrap()
-	if unwrapped != originalErr {
-		t.Errorf("APIError.Unwrap() = %v, want %v", unwrapped, originalErr)
+	if unwrapped == nil || unwrapped.Error() != originalErr.Error() {
+		t.Errorf("APIError.Unwrap() = %v, want message %q", unwrapped, originalErr.Error())
 	}
 
-	// Test errors.Is
-	if !errors.Is(apiErr, originalErr) {
-		t.Error("errors.Is should return true for wrapped error")
+}
+
+func TestAPIError_UnwrapRedactsSensitiveOriginalError(t *testing.T) {
+	originalErr := errors.New(`Get "https://api.example.com/config?token=secret-token&node_id=1": connection refused`)
+	apiErr := NewNetworkError("network failed", "https://api.example.com/config?token=secret-token&node_id=1", originalErr)
+
+	for name, err := range map[string]error{
+		"Err field": apiErr.Err,
+		"Unwrap":    apiErr.Unwrap(),
+	} {
+		if err == nil {
+			t.Fatalf("%s is nil", name)
+		}
+		if strings.Contains(err.Error(), "secret-token") {
+			t.Fatalf("%s leaked token in %q", name, err.Error())
+		}
+		if !strings.Contains(err.Error(), "token=REDACTED") {
+			t.Fatalf("%s = %q, want redacted token", name, err.Error())
+		}
+		if unwrapped := errors.Unwrap(err); unwrapped != nil {
+			t.Fatalf("%s exposed nested unwrap %q", name, unwrapped.Error())
+		}
+	}
+
+	for name, value := range map[string]string{
+		"Err field GoString": fmt.Sprintf("%#v", apiErr.Err),
+		"APIError GoString":  fmt.Sprintf("%#v", apiErr),
+	} {
+		if strings.Contains(value, "secret-token") {
+			t.Fatalf("%s leaked token in %q", name, value)
+		}
+	}
+
+	if errors.Is(apiErr, originalErr) {
+		t.Error("errors.Is should not expose arbitrary sensitive original errors")
+	}
+}
+
+func TestAPIError_PreservesSafeSentinelMatching(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		target error
+	}{
+		{name: "context canceled", err: context.Canceled, target: context.Canceled},
+		{name: "deadline exceeded", err: context.DeadlineExceeded, target: context.DeadlineExceeded},
+		{name: "response body too large", err: resty.ErrResponseBodyTooLarge, target: resty.ErrResponseBodyTooLarge},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiErr := NewNetworkError("network failed", "https://api.example.com/config?token=secret-token", tt.err)
+			if !errors.Is(apiErr, tt.target) {
+				t.Fatalf("errors.Is(apiErr, %v) = false", tt.target)
+			}
+			if strings.Contains(fmt.Sprintf("%#v", apiErr), "secret-token") {
+				t.Fatalf("GoString leaked token: %#v", apiErr)
+			}
+		})
 	}
 }
 

@@ -14,7 +14,7 @@ This project uses a custom `APIError` type to handle various errors during API c
 
 - `ErrorTypeNetworkError` - Network connection errors (Unable to connect to the server).
 - `ErrorTypeParseError` - Response parsing errors (Server returned data that cannot be parsed).
-- `ErrorTypeNotModified` (304) - Content not modified (Cache is valid).
+- `ErrorTypeNotModified` (304) - Content not modified (available through `NewNotModifiedError`; high-level client methods handle 304 without returning an error).
 - `ErrorTypeUnknown` - Unknown errors.
 
 ## Usage
@@ -60,21 +60,19 @@ func handleError(err error) {
     // Check if it is APIError
     var apiErr *pkg.APIError
     if errors.As(err, &apiErr) {
-        // Determine error type
+        // Determine error type without logging raw APIError fields.
         if apiErr.IsServerError() {
-            fmt.Printf("Server Error [%d]: %s\n", apiErr.StatusCode, apiErr.Message)
+            fmt.Printf("Server Error [%d]\n", apiErr.StatusCode)
             fmt.Println("Server issue, please retry later or contact admin")
         } else if apiErr.IsNetworkError() {
-            fmt.Printf("Network Error: %s\n", apiErr.Message)
+            fmt.Println("Network Error")
             fmt.Println("Please check your network connection")
         } else if apiErr.IsParseError() {
-            fmt.Printf("Parse Error: %s\n", apiErr.Message)
+            fmt.Println("Parse Error")
             fmt.Println("Server returned invalid data")
-        } else if apiErr.IsNotModified() {
-            fmt.Println("Data not modified, can use cache")
         }
         
-        // Print full error info (including URL)
+        // Error() formats redacted URL and lower-level error text.
         fmt.Printf("Details: %s\n", apiErr.Error())
     } else {
         // Non-APIError type
@@ -111,9 +109,11 @@ if apiErr.IsParseError() {
     fmt.Println("Server returned invalid data, client update might be needed")
 }
 
+// High-level client methods handle 304 responses directly:
+// GetNodeInfo returns (nil, nil), and GetUserList returns cached users.
+// NewNotModifiedError remains available for lower-level/custom integrations.
 if apiErr.IsNotModified() {
-    // 304 Not Modified - Not an error, implies cache usage
-    fmt.Println("Data not modified, using cache")
+    fmt.Println("Not modified in a custom integration")
 }
 ```
 
@@ -136,7 +136,7 @@ case 503:
 
 ### Retry Strategy Example
 
-Decide whether to retry based on error type:
+Decide whether to retry based on error type. Built-in automatic retries are only applied to GET requests; reporting POST requests are not automatically retried by the client.
 
 ```go
 import "time"
@@ -153,16 +153,12 @@ func callAPIWithRetry(client *pkg.Client) error {
         
         var apiErr *pkg.APIError
         if errors.As(err, &apiErr) {
-            // Server errors or network errors can be retried
-            if apiErr.IsServerError() || apiErr.IsNetworkError() {
+            // Network errors and HTTP 5xx responses may be retried for GET requests.
+            // HTTP 4xx responses usually require caller/configuration changes.
+            if apiErr.IsNetworkError() || apiErr.StatusCode >= 500 {
                 fmt.Printf("Request failed, retrying %d/%d: %s\n", i+1, maxRetries, err)
-                time.Sleep(time.Second * time.Duration(i+1)) // Exponential backoff
+                time.Sleep(time.Second * time.Duration(i+1))
                 continue
-            }
-            
-            // 304 Not Modified is not an error, no retry needed
-            if apiErr.IsNotModified() {
-                return nil // Use cache
             }
         }
         
@@ -200,7 +196,6 @@ func logError(err error) {
         fields := map[string]interface{}{
             "status_code": apiErr.StatusCode,
             "error_type":  apiErr.Type,
-            "message":     apiErr.Message,
             "error":       apiErr.Error(),
         }
         
@@ -223,11 +218,19 @@ func logError(err error) {
 
 The `Error()` method of `APIError` returns formatted error messages:
 
-- With URL: `[404] ServerError: resource not found (URL: http://api.example.com/users)`
+- With URL: `[404] ServerError: resource not found (URL: https://api.example.com/users)`
 - Without URL: `[500] ServerError: database connection failed`
-- Network Error: `[0] NetworkError: connection timeout (URL: http://api.example.com)`
+- Network Error: `[0] NetworkError: connection timeout (URL: https://api.example.com)`
 
 Sensitive query parameters such as `token`, `key`, `auth`, and `authorization` are redacted when `APIError.Error()` formats URLs. API error response bodies are also sanitized for common query, JSON, and bearer-token formats before being surfaced to callers.
+
+## High-Level 304 Behavior
+
+The high-level client methods do not surface 304 responses as ordinary errors:
+
+- `GetNodeInfo` returns `(nil, nil)` when the panel responds with `304 Not Modified`.
+- `GetUserList` returns the cached user list when the panel responds with `304 Not Modified`.
+- `NewNotModifiedError` is still available for lower-level or custom integrations that need to represent 304 as an `APIError`.
 
 ## Creating Custom Errors
 
@@ -235,10 +238,10 @@ Sensitive query parameters such as `token`, `key`, `auth`, and `authorization` a
 
 ```go
 // All HTTP 4xx/5xx errors are classified as server errors
-err := pkg.NewAPIErrorFromStatusCode(404, "user not found", "http://api.example.com/users/123", nil)
+err := pkg.NewAPIErrorFromStatusCode(404, "user not found", "https://api.example.com/users/123", nil)
 // Result: Type = ErrorTypeServerError
 
-err := pkg.NewAPIErrorFromStatusCode(500, "database error", "http://api.example.com/data", nil)
+err := pkg.NewAPIErrorFromStatusCode(500, "database error", "https://api.example.com/data", nil)
 // Result: Type = ErrorTypeServerError
 ```
 
@@ -246,7 +249,7 @@ err := pkg.NewAPIErrorFromStatusCode(500, "database error", "http://api.example.
 
 ```go
 // Create network error
-err := pkg.NewNetworkError("connection timeout", "http://api.example.com", originalErr)
+err := pkg.NewNetworkError("connection timeout", "https://api.example.com", originalErr)
 
 // Create parse error
 err := pkg.NewParseError("invalid JSON response", originalErr)
@@ -262,7 +265,7 @@ err := pkg.NewAPIError(
     418,                        // Status Code
     pkg.ErrorTypeServerError,   // Error Type
     "I'm a teapot",            // Message
-    "http://api.example.com",  // URL
+    "https://api.example.com",  // URL
     nil,                       // Original Error
 )
 ```
@@ -270,8 +273,8 @@ err := pkg.NewAPIError(
 ## Best Practices
 
 1. **Distinguish error types for handling strategies**:
-   - **Server Error (4xx/5xx)**: All HTTP errors are server errors, can be retried.
-   - **Network Error**: Network issues, can be retried.
+   - **Server Error (4xx/5xx)**: All HTTP errors are classified as server errors; retry only transient 5xx responses.
+   - **Network Error**: Network issues may be retried for idempotent calls.
    - **Parse Error**: Data format issues, log and check API version.
 
 2. **Use `errors.As()` to safely cast errors**:
@@ -282,11 +285,11 @@ err := pkg.NewAPIError(
    }
    ```
 
-3. **Log detailed logs**: Use `APIError` fields to log full error context.
+3. **Log safely**: Prefer `APIError.Error()` for logs. Do not log raw `APIError.URL`, `APIError.Message`, or `APIError.Err` fields without explicit redaction.
 
-4. **Handle 304 Not Modified**: Not a real error, indicates cache usage.
+4. **Handle 304 Not Modified**: high-level client methods handle this without returning an error; use `IsNotModified` only for custom lower-level integrations.
 
-5. **Preserve error chain**: Pass original error when creating errors for deep debugging.
+5. **Preserve error context safely**: constructors store a redacted error summary and preserve only safe sentinel matching for common cases such as context cancellation and response-body limits. Log `APIError.Error()` instead of lower-level error internals.
 
 ## API Error Field Description
 
@@ -296,7 +299,7 @@ type APIError struct {
     Type       ErrorType // Error Type (ClientError/ServerError etc.)
     Message    string    // Human-readable error message
     URL        string    // Request URL where error occurred
-    Err        error     // Original error (Optional, for error wrapping)
+    Err        error     // Redacted lower-level error summary (optional)
 }
 ```
 
