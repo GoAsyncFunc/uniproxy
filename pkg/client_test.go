@@ -161,7 +161,8 @@ func TestClient_GetWithRetryTreatsNilContextAsBackgroundOnRetry(t *testing.T) {
 		}
 	}()
 
-	_, err := client.GetNodeInfo(nil)
+	var ctx context.Context
+	_, err := client.GetNodeInfo(ctx)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -185,20 +186,21 @@ func TestClient_PublicMethodsTreatNilContextAsBackground(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(t, server.URL, "vmess")
+	var ctx context.Context
 
-	if _, err := client.GetNodeInfo(nil); err != nil {
+	if _, err := client.GetNodeInfo(ctx); err != nil {
 		t.Fatalf("GetNodeInfo with nil context failed: %v", err)
 	}
-	if _, err := client.GetUserList(nil); err != nil {
+	if _, err := client.GetUserList(ctx); err != nil {
 		t.Fatalf("GetUserList with nil context failed: %v", err)
 	}
-	if err := client.ReportUserTraffic(nil, []UserTraffic{{UID: 1, Upload: 1, Download: 1}}); err != nil {
+	if err := client.ReportUserTraffic(ctx, []UserTraffic{{UID: 1, Upload: 1, Download: 1}}); err != nil {
 		t.Fatalf("ReportUserTraffic with nil context failed: %v", err)
 	}
-	if err := client.ReportNodeOnlineUsers(nil, map[int][]string{1: {"203.0.113.1_1"}}); err != nil {
+	if err := client.ReportNodeOnlineUsers(ctx, map[int][]string{1: {"203.0.113.1_1"}}); err != nil {
 		t.Fatalf("ReportNodeOnlineUsers with nil context failed: %v", err)
 	}
-	alive, err := client.GetAliveList(nil)
+	alive, err := client.GetAliveList(ctx)
 	if err != nil {
 		t.Fatalf("GetAliveList with nil context failed: %v", err)
 	}
