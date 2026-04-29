@@ -13,6 +13,15 @@ import (
 	"time"
 )
 
+func newTestClient(t *testing.T, apiHost, nodeType string) *Client {
+	t.Helper()
+	client := New(&Config{APIHost: apiHost, Key: "token", NodeID: 1, NodeType: nodeType, Timeout: 1})
+	if client == nil {
+		t.Fatal("client is nil")
+	}
+	return client
+}
+
 func TestNewWithError_ValidatesConfig(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -145,7 +154,7 @@ func TestClient_GetWithRetryTreatsNilContextAsBackgroundOnRetry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vmess", Timeout: 1})
+	client := newTestClient(t, server.URL, "vmess")
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("GetNodeInfo with nil context panicked: %v", r)
@@ -175,7 +184,7 @@ func TestClient_PublicMethodsTreatNilContextAsBackground(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vmess", Timeout: 1})
+	client := newTestClient(t, server.URL, "vmess")
 
 	if _, err := client.GetNodeInfo(nil); err != nil {
 		t.Fatalf("GetNodeInfo with nil context failed: %v", err)
@@ -370,7 +379,7 @@ func TestClient_GetNodeInfo_RejectsMissingServerPort(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	client := newTestClient(t, server.URL, "vless")
 	_, err := client.GetNodeInfo(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
@@ -387,7 +396,7 @@ func TestClient_GetNodeInfo_RejectsZeroServerPort(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	client := newTestClient(t, server.URL, "vless")
 	_, err := client.GetNodeInfo(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
@@ -404,7 +413,7 @@ func TestClient_GetNodeInfo_RejectsOutOfRangeServerPort(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	client := newTestClient(t, server.URL, "vless")
 	_, err := client.GetNodeInfo(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
@@ -434,7 +443,7 @@ func TestClient_GetNodeInfo_RejectsImpossibleProtocolValues(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: tt.nodeType, Timeout: 1})
+			client := newTestClient(t, server.URL, tt.nodeType)
 			_, err := client.GetNodeInfo(context.Background())
 			if err == nil {
 				t.Fatal("expected error")
@@ -467,7 +476,7 @@ func TestClient_GetNodeInfo_AcceptsConservativeProtocolValues(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: tt.nodeType, Timeout: 1})
+			client := newTestClient(t, server.URL, tt.nodeType)
 			_, err := client.GetNodeInfo(context.Background())
 			if err != nil {
 				t.Fatalf("GetNodeInfo failed: %v", err)
@@ -553,7 +562,7 @@ func TestClient_GetUserList_RejectsInvalidUsers(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+			client := newTestClient(t, server.URL, "vless")
 			_, err := client.GetUserList(context.Background())
 			if err == nil {
 				t.Fatal("expected error")
@@ -780,6 +789,52 @@ func TestClient_GetNodeInfo_KeepsETagWhenMissing(t *testing.T) {
 	}
 }
 
+func TestClient_GetNodeInfo_BodyHashDedupRefreshesETag(t *testing.T) {
+	callCount := 0
+	var requestErrors []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 3 {
+			if got := r.Header.Get(headerIfNoneMatch); got != "etag-2" {
+				requestErrors = append(requestErrors, fmt.Sprintf("If-None-Match = %q, want etag-2", got))
+				w.WriteHeader(http.StatusPreconditionFailed)
+				return
+			}
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set(headerETag, "etag-"+string(rune('0'+callCount)))
+		_, _ = w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, "vless")
+	first, err := client.GetNodeInfo(context.Background())
+	if err != nil {
+		t.Fatalf("first GetNodeInfo failed: %v", err)
+	}
+	if first == nil {
+		t.Fatal("first GetNodeInfo returned nil")
+	}
+	second, err := client.GetNodeInfo(context.Background())
+	if err != nil {
+		t.Fatalf("second GetNodeInfo failed: %v", err)
+	}
+	if second != nil {
+		t.Fatalf("second GetNodeInfo = %#v, want nil for unchanged body", second)
+	}
+	third, err := client.GetNodeInfo(context.Background())
+	if err != nil {
+		t.Fatalf("third GetNodeInfo failed: %v", err)
+	}
+	if third != nil {
+		t.Fatalf("third GetNodeInfo = %#v, want nil for 304", third)
+	}
+	if len(requestErrors) > 0 {
+		t.Fatalf("request errors: %s", strings.Join(requestErrors, "; "))
+	}
+}
+
 func TestClient_GetWithRetryWaitsBetweenServerErrors(t *testing.T) {
 	callCount := 0
 	var previousCall time.Time
@@ -821,7 +876,7 @@ func TestClient_GetWithRetryReturnsErrorAfterServerErrorRetriesExhausted(t *test
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	client := newTestClient(t, server.URL, "vless")
 	_, err := client.GetNodeInfo(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
@@ -846,7 +901,7 @@ func TestClient_GetWithRetryStopsWhenContextCanceledAfterFailedAttempt(t *testin
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	client := newTestClient(t, server.URL, "vless")
 	_, err := client.GetNodeInfo(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
@@ -902,7 +957,7 @@ func TestClient_GetUserList_ParseError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	client := newTestClient(t, server.URL, "vless")
 	_, err := client.GetUserList(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
@@ -927,7 +982,7 @@ func TestClient_GetUserList_ParseErrorDoesNotCommitCache(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	client := newTestClient(t, server.URL, "vless")
 	if _, err := client.GetUserList(context.Background()); err == nil {
 		t.Fatal("expected parse error")
 	}
@@ -949,7 +1004,7 @@ func TestClient_GetUserList_304WithoutCacheReturnsNil(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	client := newTestClient(t, server.URL, "vless")
 	users, err := client.GetUserList(context.Background())
 	if err != nil {
 		t.Fatalf("GetUserList failed: %v", err)
@@ -1017,7 +1072,7 @@ func TestClient_ReportUserTraffic_RejectsInvalidPayload(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+			client := newTestClient(t, server.URL, "vless")
 			err := client.ReportUserTraffic(context.Background(), tt.traffic)
 			if err == nil {
 				t.Fatal("expected error")
@@ -1047,7 +1102,7 @@ func TestClient_ReportUserTraffic_EmptyPayloadIsNoop(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+			client := newTestClient(t, server.URL, "vless")
 			if err := client.ReportUserTraffic(context.Background(), tt.traffic); err != nil {
 				t.Fatalf("ReportUserTraffic failed: %v", err)
 			}
@@ -1102,7 +1157,7 @@ func TestClient_ReportNodeOnlineUsers_RejectsInvalidPayload(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+			client := newTestClient(t, server.URL, "vless")
 			err := client.ReportNodeOnlineUsers(context.Background(), tt.data)
 			if err == nil {
 				t.Fatal("expected error")
@@ -1132,7 +1187,7 @@ func TestClient_ReportNodeOnlineUsers_EmptyMapPostsPayload(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	client := newTestClient(t, server.URL, "vless")
 	if err := client.ReportNodeOnlineUsers(context.Background(), map[int][]string{}); err != nil {
 		t.Fatalf("ReportNodeOnlineUsers failed: %v", err)
 	}
@@ -1161,7 +1216,7 @@ func TestClient_ReportUserTraffic_PostsPushPayload(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	client := newTestClient(t, server.URL, "vless")
 	err := client.ReportUserTraffic(context.Background(), []UserTraffic{{UID: 1, Upload: 10, Download: 20}})
 	if err != nil {
 		t.Fatalf("ReportUserTraffic failed: %v", err)
@@ -1236,7 +1291,7 @@ func TestClient_GetAliveList_ParseError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+	client := newTestClient(t, server.URL, "vless")
 	_, err := client.GetAliveList(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
@@ -1302,7 +1357,7 @@ func TestClient_GetAliveList_RejectsInvalidValues(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 1, NodeType: "vless", Timeout: 1})
+			client := newTestClient(t, server.URL, "vless")
 			_, err := client.GetAliveList(context.Background())
 			if err == nil {
 				t.Fatal("expected error")
