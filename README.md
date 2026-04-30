@@ -64,6 +64,14 @@ Avoid logging full `Config`, `Client`, or `NodeInfo` values because they can inc
 
 Public methods validate caller and panel data before sending or returning it: `ReportUserTraffic` rejects non-positive or duplicate UIDs and negative counters; `ReportNodeOnlineUsers` rejects nil data, non-positive UIDs, empty user lists, and malformed `IP_suffix` entries; `GetAliveList` rejects malformed alive responses. Caller-input validation errors may be plain errors rather than `APIError`.
 
+### Production Security Checklist
+
+- Prefer `AuthModeHeaderOnly` when your panel supports bearer authentication; use query-token modes only for legacy compatibility.
+- Treat `APIHost` as operator-controlled configuration. If any user input can influence the host, enforce a hostname/IP/CIDR allowlist before constructing `Config`.
+- Use HTTPS in production and avoid following redirects to untrusted hosts when query-token modes are enabled, because URLs can appear in infrastructure logs and diagnostics.
+- Log `APIError.Error()` or your own sanitized summary instead of raw `APIError` fields, full `Config`, full `Client`, or full panel payload models.
+- Keep `Config.Debug` and `Client.Debug(true)` disabled in production; request debugging can expose authentication credentials.
+
 ### 2. Fetch Node Config
 
 ```go

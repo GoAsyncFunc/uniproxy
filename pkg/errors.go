@@ -17,7 +17,7 @@ type ErrorType string
 
 const (
 	// HTTP Errors
-	ErrorTypeServerError ErrorType = "ServerError" // 5xx Server Error
+	ErrorTypeServerError ErrorType = "ServerError" // HTTP 4xx/5xx response
 
 	// Special Error Types
 	ErrorTypeNetworkError ErrorType = "NetworkError" // Network Connection Error
