@@ -2,6 +2,7 @@ package pkg
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -50,12 +51,28 @@ type NodeInfo struct {
 	Common      *CommonNode
 }
 
+func (n NodeInfo) String() string {
+	return fmt.Sprintf("{Id:%d Type:%s Security:%d Routes:%d RawDNS:REDACTED VMess:%t Vless:%t Shadowsocks:%t Trojan:%t Tuic:%t AnyTls:%t Hysteria:%t Hysteria2:%t}", n.Id, n.Type, n.Security, len(n.Routes), n.VMess != nil, n.Vless != nil, n.Shadowsocks != nil, n.Trojan != nil, n.Tuic != nil, n.AnyTls != nil, n.Hysteria != nil, n.Hysteria2 != nil)
+}
+
+func (n NodeInfo) GoString() string {
+	return n.String()
+}
+
 type CommonNode struct {
 	Host       string      `json:"host"`
 	ServerPort int         `json:"server_port"`
 	ServerName string      `json:"server_name"`
 	Routes     []Route     `json:"routes"`
 	BaseConfig *BaseConfig `json:"base_config"`
+}
+
+func (n CommonNode) String() string {
+	return fmt.Sprintf("{Host:REDACTED ServerPort:%d ServerName:REDACTED Routes:%d BaseConfig:%t}", n.ServerPort, len(n.Routes), n.BaseConfig != nil)
+}
+
+func (n CommonNode) GoString() string {
+	return n.String()
 }
 
 // Node interface for polymorphic handling
@@ -79,6 +96,14 @@ type Route struct {
 	Match       interface{} `json:"match"`
 	Action      string      `json:"action"`
 	ActionValue string      `json:"action_value"`
+}
+
+func (r Route) String() string {
+	return fmt.Sprintf("{Id:%d Action:REDACTED Match:%d ActionValue:REDACTED}", r.Id, len(r.Matches()))
+}
+
+func (r Route) GoString() string {
+	return r.String()
 }
 
 func (r Route) Matches() []string {
@@ -124,6 +149,14 @@ type BaseConfig struct {
 	PullInterval any `json:"pull_interval"`
 }
 
+func (c BaseConfig) String() string {
+	return "{PushInterval:REDACTED PullInterval:REDACTED}"
+}
+
+func (c BaseConfig) GoString() string {
+	return c.String()
+}
+
 // VMessNode is vmess node info
 type VMessNode struct {
 	CommonNode
@@ -133,6 +166,14 @@ type VMessNode struct {
 	NetworkSettings    json.RawMessage `json:"networkSettings"`
 	Encryption         string          `json:"encryption"`
 	EncryptionSettings EncSettings     `json:"encryption_settings"`
+}
+
+func (n VMessNode) String() string {
+	return fmt.Sprintf("{CommonNode:%s Tls:%d TlsSettings:REDACTED Network:REDACTED NetworkSettings:REDACTED Encryption:REDACTED EncryptionSettings:REDACTED}", n.CommonNode.String(), n.Tls)
+}
+
+func (n VMessNode) GoString() string {
+	return n.String()
 }
 
 func (n *VMessNode) GetCommonNode() *CommonNode {
@@ -152,6 +193,14 @@ type VlessNode struct {
 	RealityConfig      RealityConfig   `json:"-"`
 }
 
+func (n VlessNode) String() string {
+	return fmt.Sprintf("{CommonNode:%s Tls:%d TlsSettings:REDACTED Network:REDACTED NetworkSettings:REDACTED Encryption:REDACTED EncryptionSettings:REDACTED Flow:REDACTED RealityConfig:REDACTED}", n.CommonNode.String(), n.Tls)
+}
+
+func (n VlessNode) GoString() string {
+	return n.String()
+}
+
 func (n *VlessNode) GetCommonNode() *CommonNode {
 	return &n.CommonNode
 }
@@ -166,11 +215,27 @@ type TlsSettings struct {
 	Xver        uint64 `json:"xver,string"`
 }
 
+func (t TlsSettings) String() string {
+	return "{ServerName:REDACTED Dest:REDACTED ServerPort:REDACTED ShortId:REDACTED PrivateKey:REDACTED Mldsa65Seed:REDACTED Xver:REDACTED}"
+}
+
+func (t TlsSettings) GoString() string {
+	return t.String()
+}
+
 type EncSettings struct {
 	Mode          string `json:"mode"`
 	Ticket        string `json:"ticket"`
 	ServerPadding string `json:"server_padding"`
 	PrivateKey    string `json:"private_key"`
+}
+
+func (e EncSettings) String() string {
+	return "{Mode:REDACTED Ticket:REDACTED ServerPadding:REDACTED PrivateKey:REDACTED}"
+}
+
+func (e EncSettings) GoString() string {
+	return e.String()
 }
 
 type RealityConfig struct {
@@ -188,6 +253,14 @@ type ShadowsocksNode struct {
 	ObfsSettings json.RawMessage `json:"obfs_settings"`
 }
 
+func (n ShadowsocksNode) String() string {
+	return "{Cipher:REDACTED ServerKey:REDACTED Obfs:REDACTED ObfsSettings:REDACTED}"
+}
+
+func (n ShadowsocksNode) GoString() string {
+	return n.String()
+}
+
 func (n *ShadowsocksNode) GetCommonNode() *CommonNode {
 	return &n.CommonNode
 }
@@ -196,6 +269,14 @@ type TrojanNode struct {
 	CommonNode
 	Network         string          `json:"network"`
 	NetworkSettings json.RawMessage `json:"networkSettings"`
+}
+
+func (n TrojanNode) String() string {
+	return fmt.Sprintf("{CommonNode:%s Network:REDACTED NetworkSettings:REDACTED}", n.CommonNode.String())
+}
+
+func (n TrojanNode) GoString() string {
+	return n.String()
 }
 
 func (n *TrojanNode) GetCommonNode() *CommonNode {
@@ -208,6 +289,14 @@ type TuicNode struct {
 	ZeroRTTHandshake  bool   `json:"zero_rtt_handshake"`
 }
 
+func (n TuicNode) String() string {
+	return fmt.Sprintf("{CommonNode:%s CongestionControl:REDACTED ZeroRTTHandshake:%t}", n.CommonNode.String(), n.ZeroRTTHandshake)
+}
+
+func (n TuicNode) GoString() string {
+	return n.String()
+}
+
 func (n *TuicNode) GetCommonNode() *CommonNode {
 	return &n.CommonNode
 }
@@ -215,6 +304,14 @@ func (n *TuicNode) GetCommonNode() *CommonNode {
 type AnyTlsNode struct {
 	CommonNode
 	PaddingScheme []string `json:"padding_scheme,omitempty"`
+}
+
+func (n AnyTlsNode) String() string {
+	return fmt.Sprintf("{CommonNode:%s PaddingScheme:%d REDACTED}", n.CommonNode.String(), len(n.PaddingScheme))
+}
+
+func (n AnyTlsNode) GoString() string {
+	return n.String()
 }
 
 func (n *AnyTlsNode) GetCommonNode() *CommonNode {
@@ -227,6 +324,14 @@ type HysteriaNode struct {
 	UpMbps   int    `json:"up_mbps"`
 	DownMbps int    `json:"down_mbps"`
 	Obfs     string `json:"obfs"`
+}
+
+func (n HysteriaNode) String() string {
+	return fmt.Sprintf("{Version:%d UpMbps:%d DownMbps:%d Obfs:REDACTED}", n.Version, n.UpMbps, n.DownMbps)
+}
+
+func (n HysteriaNode) GoString() string {
+	return n.String()
 }
 
 func (n *HysteriaNode) GetCommonNode() *CommonNode {
@@ -243,6 +348,14 @@ type Hysteria2Node struct {
 	ObfsPassword          string `json:"obfs-password"`
 }
 
+func (n Hysteria2Node) String() string {
+	return fmt.Sprintf("{Version:%d IgnoreClientBandwidth:%t UpMbps:%d DownMbps:%d ObfsType:REDACTED ObfsPassword:REDACTED}", n.Version, n.IgnoreClientBandwidth, n.UpMbps, n.DownMbps)
+}
+
+func (n Hysteria2Node) GoString() string {
+	return n.String()
+}
+
 func (n *Hysteria2Node) GetCommonNode() *CommonNode {
 	return &n.CommonNode
 }
@@ -252,15 +365,42 @@ type RawDNS struct {
 	DNSJson []byte
 }
 
+func (d RawDNS) String() string {
+	return fmt.Sprintf("{DNSMap:%d DNSJson:REDACTED}", len(d.DNSMap))
+}
+
+func (d RawDNS) GoString() string {
+	return d.String()
+}
+
 type Rules struct {
 	Regexp   []string
 	Protocol []string
+}
+
+func (r Rules) String() string {
+	return fmt.Sprintf("{Regexp:%d REDACTED Protocol:%d REDACTED}", len(r.Regexp), len(r.Protocol))
+}
+
+func (r Rules) GoString() string {
+	return r.String()
 }
 
 // User structures
 type OnlineUser struct {
 	UID int
 	IP  string
+}
+
+func (u OnlineUser) String() string {
+	if u.UID == 0 {
+		return "{IP:REDACTED}"
+	}
+	return fmt.Sprintf("{UID:%d IP:REDACTED}", u.UID)
+}
+
+func (u OnlineUser) GoString() string {
+	return u.String()
 }
 
 type UserInfo struct {
@@ -270,8 +410,24 @@ type UserInfo struct {
 	DeviceLimit int    `json:"device_limit"`
 }
 
+func (u UserInfo) String() string {
+	return fmt.Sprintf("{Id:%d Uuid:REDACTED SpeedLimit:%d DeviceLimit:%d}", u.Id, u.SpeedLimit, u.DeviceLimit)
+}
+
+func (u UserInfo) GoString() string {
+	return u.String()
+}
+
 type UserListBody struct {
 	Users []UserInfo `json:"users"`
+}
+
+func (u UserListBody) String() string {
+	return fmt.Sprintf("{Users:%d REDACTED}", len(u.Users))
+}
+
+func (u UserListBody) GoString() string {
+	return u.String()
 }
 
 type UserTraffic struct {
@@ -295,7 +451,7 @@ func IntervalToTime(i interface{}) time.Duration {
 	case string:
 		val, err := strconv.Atoi(strings.TrimSpace(v))
 		if err != nil {
-			log.Warnf("IntervalToTime: invalid string value %q: %v", v, err)
+			log.Warnf("IntervalToTime: invalid string value length=%d", len(v))
 			return 0
 		}
 		return intervalSeconds(val)

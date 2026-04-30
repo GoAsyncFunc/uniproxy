@@ -18,6 +18,14 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type AuthMode int
+
+const (
+	AuthModeLegacyDual AuthMode = iota
+	AuthModeHeaderOnly
+	AuthModeQueryOnly
+)
+
 // Config  api config
 type Config struct {
 	APIHost   string
@@ -27,6 +35,7 @@ type Config struct {
 	NodeType  string
 	Timeout   int // seconds
 	Debug     bool
+	AuthMode  AuthMode
 }
 
 const (
@@ -94,6 +103,7 @@ type clientConfig struct {
 	token     *sensitiveToken
 	nodeType  string
 	nodeID    int
+	authMode  AuthMode
 }
 
 // Client APIClient create a api client to the panel.
@@ -136,6 +146,14 @@ func (c *Client) GoString() string {
 		return "(*pkg.Client)(nil)"
 	}
 	return fmt.Sprintf("&pkg.Client{APIHost:%q, APISendIP:%q, Token:REDACTED, NodeType:%q, NodeId:%d}", redactURL(c.APIHost), c.APISendIP, c.NodeType, c.NodeId)
+}
+
+func (m AuthMode) sendsQueryToken() bool {
+	return m == AuthModeLegacyDual || m == AuthModeQueryOnly
+}
+
+func (m AuthMode) sendsAuthorizationHeader() bool {
+	return m == AuthModeLegacyDual || m == AuthModeHeaderOnly
 }
 
 func normalizeNodeType(nodeType string) (string, bool) {
@@ -197,14 +215,17 @@ func New(c *Config) *Client {
 		log.Warnf("Unknown Node type: %s", nodeType)
 	}
 
-	client.SetQueryParams(map[string]string{
+	queryParams := map[string]string{
 		"node_type": nodeType,
 		"node_id":   strconv.Itoa(c.NodeID),
-		"token":     c.Key,
-	})
+	}
+	if c.AuthMode.sendsQueryToken() {
+		queryParams["token"] = c.Key
+	}
+	client.SetQueryParams(queryParams)
 
 	if c.Debug {
-		log.Warn("debug logging is disabled because legacy query authentication can expose API tokens")
+		log.Warn("request debug logging is disabled because it can expose authentication credentials and tokens")
 	}
 
 	return &Client{
@@ -215,6 +236,7 @@ func New(c *Config) *Client {
 			token:     &sensitiveToken{value: c.Key},
 			nodeType:  nodeType,
 			nodeID:    c.NodeID,
+			authMode:  c.AuthMode,
 		},
 		Token:     "REDACTED",
 		APIHost:   c.APIHost,
@@ -235,11 +257,11 @@ func New(c *Config) *Client {
 	}
 }
 
-// Debug is disabled because legacy query authentication can expose API tokens.
+// Debug is disabled because request debug logging can expose authentication credentials and tokens.
 // Deprecated: configure application-level sanitized logging instead.
 func (c *Client) Debug(enable bool) {
 	if enable {
-		log.Warn("debug logging is disabled because legacy query authentication can expose API tokens")
+		log.Warn("request debug logging is disabled because it can expose authentication credentials and tokens")
 	}
 }
 
@@ -310,10 +332,13 @@ func normalizeContext(ctx context.Context) context.Context {
 }
 
 func (c *Client) newRequest(ctx context.Context) *resty.Request {
-	return c.client.R().
+	req := c.client.R().
 		SetContext(normalizeContext(ctx)).
-		SetHeader(headerAuthorization, "Bearer "+c.config.token.raw()).
 		ForceContentType(contentTypeJSON)
+	if c.config.authMode.sendsAuthorizationHeader() {
+		req.SetHeader(headerAuthorization, "Bearer "+c.config.token.raw())
+	}
+	return req
 }
 
 func (c *Client) getWithRetry(ctx context.Context, path string, configure func(*resty.Request)) (*resty.Response, error) {

@@ -88,6 +88,28 @@ func TestAPIError_ErrorRedactsSensitiveQueryValues(t *testing.T) {
 	}
 }
 
+func TestAPIError_ErrorRedactsMixedCaseMLDSASeedQueryValue(t *testing.T) {
+	apiErr := NewAPIError(
+		http.StatusBadGateway,
+		ErrorTypeServerError,
+		"request failed",
+		"https://api.example.com/config?mldsa65Seed=seed-secret&node_id=1",
+		nil,
+	)
+
+	for name, value := range map[string]string{
+		"Error": apiErr.Error(),
+		"URL":   apiErr.URL,
+	} {
+		if strings.Contains(value, "seed-secret") {
+			t.Fatalf("%s leaked seed secret in %q", name, value)
+		}
+		if !strings.Contains(value, "mldsa65Seed=REDACTED") {
+			t.Fatalf("%s = %q, want mldsa65Seed=REDACTED", name, value)
+		}
+	}
+}
+
 func TestAPIError_ErrorRedactsUserInfoAndCommonSecretQueryValues(t *testing.T) {
 	err := NewNetworkError(
 		"request failed",
@@ -146,6 +168,7 @@ func TestRedactEmbeddedSecretsCoversDirectFormats(t *testing.T) {
 		{name: "bearer query", input: "authorization=Bearer secret-token", secret: "secret-token"},
 		{name: "json authorization", input: `{"authorization":"Bearer secret-token"}`, secret: "secret-token"},
 		{name: "json client secret", input: `{"client_secret":"secret-token"}`, secret: "secret-token"},
+		{name: "json mldsa seed", input: `{"mldsa65Seed":"seed-secret"}`, secret: "seed-secret"},
 		{name: "json password with spaces", input: `{"password":"correct horse battery staple"}`, secret: "horse battery staple"},
 		{name: "json password with escaped quote", input: `{"password":"prefix \"remaining secret with spaces"}`, secret: "remaining secret with spaces"},
 		{name: "json password with apostrophe", input: `{"password":"prefix 'remaining secret with spaces"}`, secret: "remaining secret with spaces"},
@@ -183,7 +206,7 @@ func TestSanitizeAPIErrorMessageRedactsAndTruncates(t *testing.T) {
 }
 
 func TestAPIErrorConstructorsRedactMessage(t *testing.T) {
-	message := `panel failed with token=secret-token and {"client_secret":"secret-client"}`
+	message := `panel failed with token=secret-token, mldsa65seed=secret-seed-query, {"client_secret":"secret-client"}, and {"mldsa65seed":"secret-seed-json"}`
 	tests := []struct {
 		name string
 		err  *APIError
@@ -200,7 +223,7 @@ func TestAPIErrorConstructorsRedactMessage(t *testing.T) {
 				"Error":    tt.err.Error(),
 				"GoString": fmt.Sprintf("%#v", tt.err),
 			} {
-				for _, secret := range []string{"secret-token", "secret-client"} {
+				for _, secret := range []string{"secret-token", "secret-seed-query", "secret-client", "secret-seed-json"} {
 					if strings.Contains(value, secret) {
 						t.Fatalf("%s leaked %q in %q", name, secret, value)
 					}

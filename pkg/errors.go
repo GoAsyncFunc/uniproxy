@@ -31,10 +31,10 @@ const maxAPIErrorMessageBytes = 8 * 1024
 var (
 	embeddedBearerQueryPattern             = regexp.MustCompile(`(?i)((?:auth|authorization)\s*=\s*Bearer\s+)[^&\s"']+`)
 	embeddedBearerColonPattern             = regexp.MustCompile(`(?i)((?:["']?(?:auth|authorization)["']?)\s*:\s*["']?Bearer\s+)[^,"'\r\n\s}]+`)
-	embeddedSecretQueryPattern             = regexp.MustCompile(`(?i)(token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|secret|password|signature|sig)=([^&\s"']+)`)
-	embeddedSecretDoubleQuotedColonPattern = regexp.MustCompile(`(?i)(["']?(?:token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|secret|password|signature|sig)["']?\s*:\s*")(?:\\.|[^"\\\r\n}])*`)
-	embeddedSecretSingleQuotedColonPattern = regexp.MustCompile(`(?i)(["']?(?:token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|secret|password|signature|sig)["']?\s*:\s*')(?:\\.|[^'\\\r\n}])*`)
-	embeddedSecretColonPattern             = regexp.MustCompile(`(?i)(["']?(?:token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|secret|password|signature|sig)["']?\s*:\s*)([^,"'\s}]+)`)
+	embeddedSecretQueryPattern             = regexp.MustCompile(`(?i)(token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|mldsa65seed|secret|password|signature|sig)=([^&\s"']+)`)
+	embeddedSecretDoubleQuotedColonPattern = regexp.MustCompile(`(?i)(["']?(?:token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|mldsa65seed|secret|password|signature|sig)["']?\s*:\s*")(?:\\.|[^"\\\r\n}])*`)
+	embeddedSecretSingleQuotedColonPattern = regexp.MustCompile(`(?i)(["']?(?:token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|mldsa65seed|secret|password|signature|sig)["']?\s*:\s*')(?:\\.|[^'\\\r\n}])*`)
+	embeddedSecretColonPattern             = regexp.MustCompile(`(?i)(["']?(?:token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|mldsa65seed|secret|password|signature|sig)["']?\s*:\s*)([^,"'\s}]+)`)
 	embeddedURLUserinfoPattern             = regexp.MustCompile(`(?i)(https?://)[^\s/@]+@`)
 )
 
@@ -139,7 +139,7 @@ func redactEmbeddedSecrets(value string) string {
 
 func isSensitiveQueryKey(key string) bool {
 	switch strings.ToLower(key) {
-	case "token", "key", "auth", "authorization", "access_token", "api_key", "apikey", "x-api-key", "client_secret", "refresh_token", "id_token", "secret", "password", "signature", "sig":
+	case "token", "key", "auth", "authorization", "access_token", "api_key", "apikey", "x-api-key", "client_secret", "refresh_token", "id_token", "mldsa65seed", "secret", "password", "signature", "sig":
 		return true
 	default:
 		return false

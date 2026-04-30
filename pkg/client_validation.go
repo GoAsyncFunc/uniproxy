@@ -57,10 +57,13 @@ func validateConfig(c *Config) error {
 		return fmt.Errorf("node id must be positive: %d", c.NodeID)
 	}
 	if _, ok := normalizeNodeType(c.NodeType); !ok {
-		return fmt.Errorf("unsupported node type: %s", c.NodeType)
+		return errors.New("unsupported node type")
+	}
+	if c.AuthMode != AuthModeLegacyDual && c.AuthMode != AuthModeHeaderOnly && c.AuthMode != AuthModeQueryOnly {
+		return errors.New("unsupported auth mode")
 	}
 	if c.APISendIP != "" && net.ParseIP(c.APISendIP) == nil {
-		return fmt.Errorf("invalid api send ip: %s", c.APISendIP)
+		return errors.New("invalid api send ip")
 	}
 	return nil
 }
@@ -80,7 +83,7 @@ func validateUserList(userlist *UserListBody) error {
 			return fmt.Errorf("user uuid is required for id %d", user.Id)
 		}
 		if !uuidPattern.MatchString(user.Uuid) {
-			return fmt.Errorf("user uuid is invalid for id %d: %s", user.Id, user.Uuid)
+			return fmt.Errorf("user uuid is invalid for id %d", user.Id)
 		}
 		if user.SpeedLimit < 0 {
 			return fmt.Errorf("user speed_limit must be non-negative for id %d", user.Id)
@@ -137,7 +140,7 @@ func validateRoute(routeConfig Route) error {
 			return fmt.Errorf("%s route requires action_value", routeConfig.Action)
 		}
 	default:
-		return fmt.Errorf("unsupported action %q", routeConfig.Action)
+		return errors.New("unsupported route action")
 	}
 	return nil
 }
@@ -159,16 +162,16 @@ func validateDNSRoute(routeConfig Route) error {
 	}
 	if host, port, err := net.SplitHostPort(value); err == nil {
 		if err := validateDNSHost(host); err != nil {
-			return fmt.Errorf("invalid dns action_value: %q", routeConfig.ActionValue)
+			return errors.New("invalid dns action_value")
 		}
 		portNumber, err := strconv.Atoi(port)
 		if err != nil || portNumber <= 0 || portNumber > 65535 {
-			return fmt.Errorf("invalid dns action_value: %q", routeConfig.ActionValue)
+			return errors.New("invalid dns action_value")
 		}
 		return nil
 	}
 	if err := validateDNSHost(value); err != nil {
-		return fmt.Errorf("invalid dns action_value: %q", routeConfig.ActionValue)
+		return errors.New("invalid dns action_value")
 	}
 	return nil
 }
@@ -181,13 +184,13 @@ func validateDNSHost(value string) error {
 		return nil
 	}
 	if strings.ContainsAny(value, " \t\r\n/?#@") {
-		return fmt.Errorf("invalid dns host: %q", value)
+		return errors.New("invalid dns host")
 	}
 	if strings.Trim(value, ".") == "" {
-		return fmt.Errorf("invalid dns host: %q", value)
+		return errors.New("invalid dns host")
 	}
 	if _, err := url.ParseRequestURI("//" + value); err != nil {
-		return fmt.Errorf("invalid dns host: %q", value)
+		return errors.New("invalid dns host")
 	}
 	return nil
 }
@@ -248,18 +251,18 @@ func validateOnlineUsers(data map[int][]string) error {
 		for _, user := range users {
 			parts := strings.Split(user, "_")
 			if len(parts) != 2 {
-				return fmt.Errorf("invalid online user entry for uid %d: %q", uid, user)
+				return fmt.Errorf("invalid online user entry for uid %d", uid)
 			}
 			ip := strings.TrimSpace(parts[0])
 			suffix := strings.TrimSpace(parts[1])
 			if parts[0] != ip || parts[1] != suffix || ip == "" || suffix == "" || net.ParseIP(ip) == nil {
-				return fmt.Errorf("invalid online user entry for uid %d: %q", uid, user)
+				return fmt.Errorf("invalid online user entry for uid %d", uid)
 			}
 			if strings.HasPrefix(suffix, "+") || strings.HasPrefix(suffix, "-") {
-				return fmt.Errorf("invalid online user entry for uid %d: %q", uid, user)
+				return fmt.Errorf("invalid online user entry for uid %d", uid)
 			}
 			if _, err := strconv.Atoi(suffix); err != nil {
-				return fmt.Errorf("invalid online user entry for uid %d: %q", uid, user)
+				return fmt.Errorf("invalid online user entry for uid %d", uid)
 			}
 		}
 	}

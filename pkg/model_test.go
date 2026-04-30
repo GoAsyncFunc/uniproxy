@@ -1,11 +1,105 @@
 package pkg
 
 import (
+	"bytes"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
+
+func TestSensitiveModelFormattingRedactsSecrets(t *testing.T) {
+	route := Route{Id: 1, Match: `main,{"client_secret":"match-secret"}`, Action: "action-secret", ActionValue: `{"token":"route-secret"}`}
+	dnsRoute := Route{Id: 2, Match: `main,{"resolver":"route-dns-secret.example.com"}`, Action: RouteActionDNS, ActionValue: `{"token":"dns-action-secret"}`}
+	rawDNS := RawDNS{DNSJson: []byte(`{"resolver":"internal-dns-secret.example.com","client_secret":"dns-secret"}`)}
+	tlsSettings := TlsSettings{ServerName: "tls-sni-secret.example.com", Dest: "dest-secret.example.com", ServerPort: "443", ShortId: "short-id-secret", PrivateKey: "private-secret", Mldsa65Seed: "seed-secret", Xver: 1}
+	encSettings := EncSettings{Mode: "native-secret-mode", Ticket: "enc-ticket-secret", ServerPadding: "server-padding-secret", PrivateKey: "enc-private-secret"}
+	common := &CommonNode{Host: "common-host-secret.example.com", ServerPort: 443, ServerName: "common-sni-secret.example.com", Routes: []Route{route, dnsRoute}, BaseConfig: &BaseConfig{PushInterval: "push-secret", PullInterval: "pull-secret"}}
+	vmess := &VMessNode{CommonNode: *common, TlsSettings: tlsSettings, Network: "network-secret", NetworkSettings: []byte(`{"host":"network-secret.example.com"}`), Encryption: "encryption-secret", EncryptionSettings: encSettings}
+	vless := &VlessNode{CommonNode: *common, TlsSettings: tlsSettings, Network: "network-secret", NetworkSettings: []byte(`{"host":"network-secret.example.com"}`), Encryption: "encryption-secret", EncryptionSettings: encSettings, Flow: "flow-secret"}
+	shadowsocks := &ShadowsocksNode{CommonNode: *common, Cipher: "cipher-secret", ServerKey: "server-key-secret", Obfs: "obfs-type-secret", ObfsSettings: []byte(`{"password":"obfs-secret"}`)}
+	trojan := &TrojanNode{CommonNode: *common, Network: "network-secret", NetworkSettings: []byte(`{"host":"trojan-network-secret.example.com"}`)}
+	tuic := &TuicNode{CommonNode: *common, CongestionControl: "congestion-secret", ZeroRTTHandshake: true}
+	anyTLS := &AnyTlsNode{CommonNode: *common, PaddingScheme: []string{"padding-secret"}}
+	hysteria := &HysteriaNode{CommonNode: *common, Obfs: "hysteria-obfs-secret"}
+	hysteria2 := &Hysteria2Node{CommonNode: *common, ObfsType: "obfs-type-secret", ObfsPassword: "obfs-password-secret"}
+	onlineUser := OnlineUser{UID: 42, IP: "203.0.113.10"}
+	rules := Rules{Regexp: []string{"rules-regexp-secret.example.com"}, Protocol: []string{"rules-protocol-secret"}}
+	user := UserInfo{Id: 1, Uuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+	node := &NodeInfo{
+		Id:           7,
+		Type:         Vless,
+		Security:     Reality,
+		RawDNS:       rawDNS,
+		Routes:       []Route{route, dnsRoute},
+		VMess:        vmess,
+		Vless:        vless,
+		Shadowsocks:  shadowsocks,
+		Trojan:       trojan,
+		Tuic:         tuic,
+		AnyTls:       anyTLS,
+		Hysteria:     hysteria,
+		Hysteria2:    hysteria2,
+		Common:       common,
+		PushInterval: time.Second,
+	}
+
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{name: "node pointer", value: node},
+		{name: "node value", value: *node},
+		{name: "common pointer", value: common},
+		{name: "common value", value: *common},
+		{name: "vmess pointer", value: vmess},
+		{name: "vmess value", value: *vmess},
+		{name: "vless pointer", value: vless},
+		{name: "vless value", value: *vless},
+		{name: "tls", value: tlsSettings},
+		{name: "enc", value: encSettings},
+		{name: "shadowsocks pointer", value: shadowsocks},
+		{name: "shadowsocks value", value: *shadowsocks},
+		{name: "trojan pointer", value: trojan},
+		{name: "trojan value", value: *trojan},
+		{name: "tuic pointer", value: tuic},
+		{name: "tuic value", value: *tuic},
+		{name: "anytls pointer", value: anyTLS},
+		{name: "anytls value", value: *anyTLS},
+		{name: "hysteria pointer", value: hysteria},
+		{name: "hysteria value", value: *hysteria},
+		{name: "hysteria2 pointer", value: hysteria2},
+		{name: "hysteria2 value", value: *hysteria2},
+		{name: "route", value: route},
+		{name: "dns route", value: dnsRoute},
+		{name: "raw dns", value: rawDNS},
+		{name: "online user pointer", value: &onlineUser},
+		{name: "online user value", value: onlineUser},
+		{name: "rules", value: rules},
+		{name: "user", value: user},
+		{name: "user list", value: UserListBody{Users: []UserInfo{user}}},
+	}
+	secrets := []string{"action-secret", "route-secret", "match-secret", "route-dns-secret.example.com", "dns-action-secret", "dns-secret", "internal-dns-secret", "tls-sni-secret.example.com", "dest-secret.example.com", "short-id-secret", "private-secret", "seed-secret", "native-secret-mode", "enc-ticket-secret", "server-padding-secret", "enc-private-secret", "common-host-secret.example.com", "common-sni-secret.example.com", "push-secret", "pull-secret", "network-secret", "network-secret.example.com", "encryption-secret", "flow-secret", "cipher-secret", "server-key-secret", "obfs-secret", "trojan-network-secret.example.com", "congestion-secret", "padding-secret", "obfs-type-secret", "hysteria-obfs-secret", "obfs-password-secret", onlineUser.IP, "rules-regexp-secret.example.com", "rules-protocol-secret", user.Uuid}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			outputs := []string{fmt.Sprint(tt.value), fmt.Sprintf("%+v", tt.value), fmt.Sprintf("%#v", tt.value)}
+			for _, output := range outputs {
+				for _, secret := range secrets {
+					if strings.Contains(output, secret) {
+						t.Fatalf("formatted value leaked %q in %q", secret, output)
+					}
+				}
+				if !strings.Contains(output, "REDACTED") {
+					t.Fatalf("formatted value = %q, want REDACTED", output)
+				}
+			}
+		})
+	}
+}
 
 func TestRouteActionClassification(t *testing.T) {
 	if !IsBlockRouteAction(RouteActionBlock) || !IsBlockRouteAction(RouteActionBlockIP) || !IsBlockRouteAction(RouteActionBlockPort) || !IsBlockRouteAction(RouteActionProtocol) {
@@ -122,6 +216,26 @@ func TestIntervalToTime(t *testing.T) {
 	}
 }
 
+func TestIntervalToTimeInvalidStringLogRedactsValue(t *testing.T) {
+	var output bytes.Buffer
+	originalOutput := log.StandardLogger().Out
+	log.SetOutput(&output)
+	t.Cleanup(func() {
+		log.SetOutput(originalOutput)
+	})
+
+	if got := IntervalToTime("token=interval-secret"); got != 0 {
+		t.Fatalf("IntervalToTime() = %v, want 0", got)
+	}
+
+	capturedLogs := output.String()
+	for _, leaked := range []string{"interval-secret", "token=interval-secret"} {
+		if strings.Contains(capturedLogs, leaked) {
+			t.Fatalf("captured logs leaked %q in %q", leaked, capturedLogs)
+		}
+	}
+}
+
 func TestValidateCommonNodeRejectsInvalidRoutes(t *testing.T) {
 	tests := []struct {
 		name string
@@ -190,6 +304,53 @@ func TestValidateDNSRouteRejectsUnsafeActionValues(t *testing.T) {
 			err := validateCommonNode(&CommonNode{ServerPort: 443, Routes: []Route{{Action: RouteActionDNS, Match: []string{"domain:example.com"}, ActionValue: tt.actionValue}}})
 			if err == nil {
 				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestValidationErrorsDoNotLeakRawExternalValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		leaked []string
+	}{
+		{
+			name:   "invalid uuid",
+			err:    validateUserList(&UserListBody{Users: []UserInfo{{Id: 1, Uuid: "not-a-secret-uuid"}}}),
+			leaked: []string{"not-a-secret-uuid"},
+		},
+		{
+			name:   "dns action value",
+			err:    validateCommonNode(&CommonNode{ServerPort: 443, Routes: []Route{{Action: RouteActionDNS, Match: []string{"domain:example.com"}, ActionValue: "user:pass@dns.example.com?token=secret"}}}),
+			leaked: []string{"user:pass", "secret", "dns.example.com"},
+		},
+		{
+			name:   "online user entry",
+			err:    validateOnlineUsers(map[int][]string{1: {"203.0.113.1_secret"}}),
+			leaked: []string{"203.0.113.1_secret", "secret"},
+		},
+		{
+			name:   "unsupported route action",
+			err:    validateCommonNode(&CommonNode{ServerPort: 443, Routes: []Route{{Action: "token=secret", Match: []string{"domain:example.com"}}}}),
+			leaked: []string{"token=secret", "secret"},
+		},
+		{
+			name:   "unsupported node type",
+			err:    validateConfig(&Config{APIHost: "http://127.0.0.1", Key: "token", NodeID: 1, NodeType: "token=secret"}),
+			leaked: []string{"token=secret", "secret"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.err == nil {
+				t.Fatal("expected error")
+			}
+			for _, leaked := range tt.leaked {
+				if strings.Contains(tt.err.Error(), leaked) {
+					t.Fatalf("error leaked %q in %q", leaked, tt.err.Error())
+				}
 			}
 		})
 	}

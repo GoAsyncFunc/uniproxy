@@ -39,6 +39,7 @@ func main() {
 		NodeID:   1,
 		NodeType: "hysteria2", // vmess, vless, trojan, etc.
 		Timeout:  10,
+		AuthMode: pkg.AuthModeHeaderOnly, // recommended when the panel supports bearer auth
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -55,9 +56,13 @@ Configuration validation requires `APIHost` to use `http` or `https` with a host
 
 `APIHost` should come from trusted configuration, not direct user input. Remote HTTP hosts are rejected by default; `http://localhost` and loopback IPs are allowed for local development. This validation is transport hardening, not complete SSRF protection; applications that accept user-controlled hosts must enforce their own hostname/IP allowlist. Prefer HTTPS in production because v1 retains query-token compatibility.
 
-By default, v1 sends the node token in both places: the legacy `token` query parameter required by existing UniProxy panels and an `Authorization: Bearer <token>` header for deployments that can read header-based auth.
+By default, v1 sends the node token in both places: the legacy `token` query parameter required by existing UniProxy panels and an `Authorization: Bearer <token>` header for deployments that can read header-based auth. Set `AuthModeHeaderOnly` for new deployments whose panels support bearer auth; use `AuthModeQueryOnly` only for legacy panels. Query-token modes can expose credentials through infrastructure URL logs, so prefer HTTPS and header-only auth when possible.
 
-Avoid logging full `Config`, `Client`, or `NodeInfo` values because they can include tokens, private keys, or server keys.
+The deprecated public `Client.APIHost`, `Client.APISendIP`, `Client.Token`, `Client.NodeType`, and `Client.NodeId` fields are informational compatibility fields; mutating them does not change request behavior. `Config.Debug` and `Client.Debug(true)` are disabled/deprecated because request debugging can expose credentials. Use sanitized application-level logging instead.
+
+Avoid logging full `Config`, `Client`, or `NodeInfo` values because they can include tokens, private keys, or server keys. Common `Client`, `APIError`, and sensitive model formatters redact known sensitive fields, but callers should still avoid logging full remote panel payloads.
+
+Public methods validate caller and panel data before sending or returning it: `ReportUserTraffic` rejects non-positive or duplicate UIDs and negative counters; `ReportNodeOnlineUsers` rejects nil data, non-positive UIDs, empty user lists, and malformed `IP_suffix` entries; `GetAliveList` rejects malformed alive responses. Caller-input validation errors may be plain errors rather than `APIError`.
 
 ### 2. Fetch Node Config
 

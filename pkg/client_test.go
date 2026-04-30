@@ -139,13 +139,30 @@ func TestNew_NilConfigDoesNotPanic(t *testing.T) {
 }
 
 func TestNewWithError_InvalidAPIHostDoesNotEchoSecrets(t *testing.T) {
-	secret := "secret-token"
-	_, err := NewWithError(&Config{APIHost: "https://example.com/%zz?token=" + secret, Key: "token", NodeID: 1, NodeType: "vless"})
-	if err == nil {
-		t.Fatal("expected error")
+	tests := []struct {
+		name   string
+		config *Config
+	}{
+		{
+			name:   "invalid api host",
+			config: &Config{APIHost: "https://example.com/%zz?token=secret-token", Key: "token", NodeID: 1, NodeType: "vless"},
+		},
+		{
+			name:   "invalid api send ip",
+			config: &Config{APIHost: "http://127.0.0.1", APISendIP: "203.0.113.1_secret-token", Key: "token", NodeID: 1, NodeType: "vless"},
+		},
 	}
-	if strings.Contains(err.Error(), secret) {
-		t.Fatal("invalid api host error leaked secret")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewWithError(tt.config)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if strings.Contains(err.Error(), "secret-token") {
+				t.Fatalf("error leaked secret in %q", err.Error())
+			}
+		})
 	}
 }
 
@@ -1434,6 +1451,63 @@ func TestClient_GetNodeInfoUsesConstructionSnapshot(t *testing.T) {
 	}
 	if len(requestErrors) > 0 {
 		t.Fatalf("request errors: %s", strings.Join(requestErrors, "; "))
+	}
+}
+
+func TestClient_ConfigurableAuthModes(t *testing.T) {
+	tests := []struct {
+		name       string
+		authMode   AuthMode
+		wantQuery  string
+		wantHeader string
+	}{
+		{name: "default dual", wantQuery: "token", wantHeader: "Bearer token"},
+		{name: "explicit dual", authMode: AuthModeLegacyDual, wantQuery: "token", wantHeader: "Bearer token"},
+		{name: "header only", authMode: AuthModeHeaderOnly, wantHeader: "Bearer token"},
+		{name: "query only", authMode: AuthModeQueryOnly, wantQuery: "token"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requestErrors []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.URL.Query().Get("node_id"); got != "7" {
+					requestErrors = append(requestErrors, fmt.Sprintf("node_id query = %q", got))
+				}
+				if got := r.URL.Query().Get("node_type"); got != "vless" {
+					requestErrors = append(requestErrors, fmt.Sprintf("node_type query = %q", got))
+				}
+				if got := r.URL.Query().Get("token"); got != tt.wantQuery {
+					requestErrors = append(requestErrors, fmt.Sprintf("token query = %q", got))
+				}
+				if got := r.Header.Get("Authorization"); got != tt.wantHeader {
+					requestErrors = append(requestErrors, fmt.Sprintf("Authorization header = %q", got))
+				}
+				_, _ = w.Write([]byte(`{"server_port":443,"tls":2,"server_name":"example.com","network":"tcp","encryption":"none"}`))
+			}))
+			defer server.Close()
+
+			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 7, NodeType: "vless", Timeout: 1, AuthMode: tt.authMode})
+			if client == nil {
+				t.Fatal("client is nil")
+			}
+			if _, err := client.GetNodeInfo(context.Background()); err != nil {
+				t.Fatalf("GetNodeInfo failed: %v", err)
+			}
+			if len(requestErrors) > 0 {
+				t.Fatalf("request errors: %s", strings.Join(requestErrors, "; "))
+			}
+		})
+	}
+}
+
+func TestNewWithError_RejectsInvalidAuthMode(t *testing.T) {
+	client, err := NewWithError(&Config{APIHost: "http://127.0.0.1", Key: "secret-token", NodeID: 1, NodeType: "vless", AuthMode: AuthMode(99)})
+	if err == nil {
+		t.Fatalf("expected error, got client %#v", client)
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "99") {
+		t.Fatalf("error leaked raw auth details: %q", err.Error())
 	}
 }
 

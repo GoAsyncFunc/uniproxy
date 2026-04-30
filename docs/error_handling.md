@@ -8,7 +8,7 @@ This project uses a custom `APIError` type to handle various errors during API c
 
 ### HTTP Errors
 
-- `ErrorTypeServerError` (4xx/5xx) - Server-side errors (All HTTP 4xx and 5xx errors are classified as server errors).
+- `ErrorTypeServerError` (4xx/5xx) - HTTP error responses. Both HTTP 4xx and 5xx responses use this classification; retry only transient 5xx responses unless your application has domain-specific guidance.
 
 ### Special Error Types
 
@@ -62,8 +62,8 @@ func handleError(err error) {
     if errors.As(err, &apiErr) {
         // Determine error type without logging raw APIError fields.
         if apiErr.IsServerError() {
-            fmt.Printf("Server Error [%d]\n", apiErr.StatusCode)
-            fmt.Println("Server issue, please retry later or contact admin")
+            fmt.Printf("HTTP Error [%d]\n", apiErr.StatusCode)
+            fmt.Println("HTTP request failed; inspect status code before retrying")
         } else if apiErr.IsNetworkError() {
             fmt.Println("Network Error")
             fmt.Println("Please check your network connection")
@@ -89,9 +89,9 @@ func handleError(err error) {
 var apiErr *pkg.APIError
 if errors.As(err, &apiErr) {
     if apiErr.IsServerError() {
-        // 4xx/5xx errors - Server side issues
-        // All HTTP errors are classified as server errors
-        fmt.Println("Server issue, please retry later")
+        // 4xx/5xx HTTP responses share this classification.
+        // Retry only transient 5xx responses unless your application knows otherwise.
+        fmt.Println("HTTP request failed")
     }
 }
 ```
@@ -233,7 +233,7 @@ The high-level client methods do not surface 304 responses as ordinary errors:
 ### Method 1: Infer Error Type from Status Code (Recommended)
 
 ```go
-// All HTTP 4xx/5xx errors are classified as server errors
+// All HTTP 4xx/5xx errors are classified as HTTP errors
 err := pkg.NewAPIErrorFromStatusCode(404, "user not found", "https://api.example.com/users/123", nil)
 // Result: Type = ErrorTypeServerError
 
@@ -269,7 +269,7 @@ err := pkg.NewAPIError(
 ## Best Practices
 
 1. **Distinguish error types for handling strategies**:
-   - **Server Error (4xx/5xx)**: All HTTP errors are classified as server errors; retry only transient 5xx responses.
+   - **HTTP Error (4xx/5xx)**: All HTTP error responses use `ErrorTypeServerError`; retry only transient 5xx responses.
    - **Network Error**: Network issues may be retried for idempotent calls.
    - **Parse Error**: Data format issues, log and check API version.
 
@@ -287,12 +287,14 @@ err := pkg.NewAPIError(
 
 5. **Preserve error context safely**: constructors store a redacted error summary and preserve only safe sentinel matching for common cases such as context cancellation and response-body limits. Log `APIError.Error()` instead of lower-level error internals.
 
+6. **Handle validation errors normally**: caller-input validation errors, such as invalid report payloads, may be plain errors rather than `APIError` values.
+
 ## API Error Field Description
 
 ```go
 type APIError struct {
     StatusCode int       // HTTP Status Code (0 for non-HTTP errors, e.g., network error)
-    Type       ErrorType // Error Type (ClientError/ServerError etc.)
+    Type       ErrorType // Error classification (ServerError, NetworkError, ParseError, NotModified, Unknown)
     Message    string    // Human-readable error message
     URL        string    // Request URL where error occurred
     Err        error     // Redacted lower-level error summary (optional)
