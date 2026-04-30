@@ -2,6 +2,7 @@ package pkg
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -145,8 +146,88 @@ func TestValidateCommonNodeRejectsInvalidRoutes(t *testing.T) {
 	}
 }
 
+func TestValidateDNSRouteAcceptsSafeActionValues(t *testing.T) {
+	tests := []struct {
+		name        string
+		actionValue string
+	}{
+		{name: "ipv4", actionValue: "1.1.1.1"},
+		{name: "hostname", actionValue: "dns.example.com"},
+		{name: "hostname with port", actionValue: "dns.example.com:53"},
+		{name: "bracketed ipv6 with port", actionValue: "[2001:4860:4860::8888]:53"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCommonNode(&CommonNode{ServerPort: 443, Routes: []Route{{Action: RouteActionDNS, Match: []string{"domain:example.com"}, ActionValue: tt.actionValue}}})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateDNSRouteRejectsUnsafeActionValues(t *testing.T) {
+	tests := []struct {
+		name        string
+		actionValue string
+	}{
+		{name: "empty", actionValue: ""},
+		{name: "url", actionValue: "https://dns.example.com"},
+		{name: "query", actionValue: "dns.example.com?token=secret"},
+		{name: "fragment", actionValue: "dns.example.com#fragment"},
+		{name: "userinfo", actionValue: "user:pass@dns.example.com"},
+		{name: "path", actionValue: "dns.example.com/path"},
+		{name: "zero port", actionValue: "dns.example.com:0"},
+		{name: "negative port", actionValue: "dns.example.com:-1"},
+		{name: "high port", actionValue: "dns.example.com:65536"},
+		{name: "whitespace", actionValue: "dns.example.com\n8.8.8.8"},
+		{name: "dots only", actionValue: "..."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCommonNode(&CommonNode{ServerPort: 443, Routes: []Route{{Action: RouteActionDNS, Match: []string{"domain:example.com"}, ActionValue: tt.actionValue}}})
+			if err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestValidateDNSRouteMainPreservesCommaJSONPayload(t *testing.T) {
+	node := &CommonNode{ServerPort: 443, Routes: []Route{{Action: RouteActionDNS, Match: `main,{"servers":["1.1.1.1","8.8.8.8"]}`}}}
+	if err := validateCommonNode(node); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateUserListRejectsInvalidUUID(t *testing.T) {
 	err := validateUserList(&UserListBody{Users: []UserInfo{{Id: 1, Uuid: "not-a-uuid"}}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestValidateUserListRejectsDuplicateUUID(t *testing.T) {
+	duplicateUUID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	err := validateUserList(&UserListBody{Users: []UserInfo{
+		{Id: 1, Uuid: duplicateUUID},
+		{Id: 2, Uuid: duplicateUUID},
+	}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "duplicate user uuid") {
+		t.Fatalf("error = %q, want duplicate user uuid", err.Error())
+	}
+}
+
+func TestValidateUserListRejectsDuplicateUUIDWithDifferentCase(t *testing.T) {
+	err := validateUserList(&UserListBody{Users: []UserInfo{
+		{Id: 1, Uuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+		{Id: 2, Uuid: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"},
+	}})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -183,6 +264,9 @@ func TestProcessCommonNodePreservesRoutesAndLegacyRules(t *testing.T) {
 	}
 	if !reflect.DeepEqual(node.Rules.Regexp, []string{"ads.example.com"}) {
 		t.Fatalf("rules regexp = %#v", node.Rules.Regexp)
+	}
+	if node.Routes[3].Action != RouteActionProtocol || !reflect.DeepEqual(node.Routes[3].Matches(), []string{"quic"}) {
+		t.Fatalf("protocol route not preserved: %#v", node.Routes[3])
 	}
 	if !reflect.DeepEqual(node.Rules.Protocol, []string{"bittorrent"}) {
 		t.Fatalf("rules protocol = %#v", node.Rules.Protocol)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -65,6 +66,10 @@ func TestNewWithError_ValidatesConfig(t *testing.T) {
 		{name: "host without scheme", config: &Config{APIHost: "example.com", Key: "token", NodeID: 1, NodeType: "vless"}},
 		{name: "host without hostname", config: &Config{APIHost: "http://", Key: "token", NodeID: 1, NodeType: "vless"}},
 		{name: "unsupported scheme", config: &Config{APIHost: "ftp://example.com", Key: "token", NodeID: 1, NodeType: "vless"}},
+		{name: "host with username", config: &Config{APIHost: "https://token@example.com", Key: "token", NodeID: 1, NodeType: "vless"}},
+		{name: "host with username and password", config: &Config{APIHost: "https://user:pass@example.com", Key: "token", NodeID: 1, NodeType: "vless"}},
+		{name: "host with query", config: &Config{APIHost: "https://example.com?token=secret", Key: "token", NodeID: 1, NodeType: "vless"}},
+		{name: "host with fragment", config: &Config{APIHost: "https://example.com#secret", Key: "token", NodeID: 1, NodeType: "vless"}},
 		{name: "empty key", config: &Config{APIHost: "http://127.0.0.1", NodeID: 1, NodeType: "vless"}},
 		{name: "whitespace key", config: &Config{APIHost: "http://127.0.0.1", Key: "   ", NodeID: 1, NodeType: "vless"}},
 		{name: "zero node id", config: &Config{APIHost: "http://127.0.0.1", Key: "token", NodeID: 0, NodeType: "vless"}},
@@ -83,6 +88,43 @@ func TestNewWithError_ValidatesConfig(t *testing.T) {
 	}
 }
 
+func TestNewWithError_ValidatesAPIHostAuthority(t *testing.T) {
+	tests := []struct {
+		name    string
+		apiHost string
+		wantErr bool
+	}{
+		{name: "https host", apiHost: "https://example.com"},
+		{name: "https host trailing slash", apiHost: "https://example.com/"},
+		{name: "https host with port", apiHost: "https://example.com:8443"},
+		{name: "localhost http", apiHost: "http://localhost"},
+		{name: "ipv4 loopback http", apiHost: "http://127.0.0.1"},
+		{name: "ipv6 loopback http", apiHost: "http://[::1]"},
+		{name: "empty hostname with port", apiHost: "https://:443", wantErr: true},
+		{name: "invalid port", apiHost: "https://example.com:bad", wantErr: true},
+		{name: "non root path", apiHost: "https://example.com/panel", wantErr: true},
+		{name: "escaped non root path", apiHost: "https://example.com/%2fsecret", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := NewWithError(&Config{APIHost: tt.apiHost, Key: "token", NodeID: 1, NodeType: "vless"})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got client %#v", client)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if client == nil {
+				t.Fatal("client is nil")
+			}
+		})
+	}
+}
+
 func TestNew_NilConfigDoesNotPanic(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -96,6 +138,17 @@ func TestNew_NilConfigDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestNewWithError_InvalidAPIHostDoesNotEchoSecrets(t *testing.T) {
+	secret := "secret-token"
+	_, err := NewWithError(&Config{APIHost: "https://example.com/%zz?token=" + secret, Key: "token", NodeID: 1, NodeType: "vless"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatal("invalid api host error leaked secret")
+	}
+}
+
 func TestNewWithError_RejectsRemoteHTTP(t *testing.T) {
 	client, err := NewWithError(&Config{APIHost: "http://example.com", Key: "token", NodeID: 1, NodeType: "vless"})
 	if err == nil {
@@ -103,6 +156,85 @@ func TestNewWithError_RejectsRemoteHTTP(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "https") {
 		t.Fatalf("error = %q, want https guidance", err.Error())
+	}
+}
+
+func TestSensitiveTokenFormattingRedactsRawValue(t *testing.T) {
+	token := &sensitiveToken{value: "secret-token"}
+
+	for name, value := range map[string]string{
+		"String":   fmt.Sprint(token),
+		"format":   fmt.Sprintf("%+v", token),
+		"GoString": fmt.Sprintf("%#v", token),
+	} {
+		if strings.Contains(value, "secret-token") {
+			t.Fatalf("%s leaked token in %q", name, value)
+		}
+		if !strings.Contains(value, "REDACTED") {
+			t.Fatalf("%s = %q, want REDACTED", name, value)
+		}
+	}
+	if token.raw() != "secret-token" {
+		t.Fatalf("raw token = %q", token.raw())
+	}
+}
+
+func TestRedactedRestyClientFormatting(t *testing.T) {
+	client := redactedRestyClient{Client: resty.New()}
+
+	for name, value := range map[string]string{
+		"String":   fmt.Sprint(client),
+		"format":   fmt.Sprintf("%+v", client),
+		"GoString": fmt.Sprintf("%#v", client),
+	} {
+		if value != "REDACTED" {
+			t.Fatalf("%s = %q, want REDACTED", name, value)
+		}
+	}
+}
+
+func TestClientStringOutputRedactsToken(t *testing.T) {
+	secret := "secret-token"
+	client := New(&Config{APIHost: "https://example.com", Key: secret, NodeID: 1, NodeType: "vless"})
+	if client == nil {
+		t.Fatal("client is nil")
+	}
+
+	clientValue := reflect.ValueOf(client).Elem().Interface()
+	valueOutputs := map[string]string{
+		"value fields": fmt.Sprintf("%+v", clientValue),
+		"value go":     fmt.Sprintf("%#v", clientValue),
+	}
+	for name, output := range valueOutputs {
+		t.Run(name, func(t *testing.T) {
+			if strings.Contains(output, secret) {
+				t.Fatal("formatted client leaked token")
+			}
+			if !strings.Contains(output, "REDACTED") {
+				t.Fatalf("formatted client = %q, want redaction marker", output)
+			}
+		})
+	}
+
+	apiHostSecret := "api-host-secret"
+	fragmentSecret := "fragment-secret"
+	client.APIHost = "https://example.com?token=" + apiHostSecret + "#" + fragmentSecret
+	pointerOutputs := map[string]string{
+		"default": fmt.Sprint(client),
+		"fields":  fmt.Sprintf("%+v", client),
+		"go":      fmt.Sprintf("%#v", client),
+	}
+	for name, output := range pointerOutputs {
+		t.Run(name, func(t *testing.T) {
+			for _, leaked := range []string{secret, apiHostSecret, fragmentSecret} {
+				if strings.Contains(output, leaked) {
+					t.Fatal("formatted client leaked a secret")
+				}
+			}
+			if !strings.Contains(output, "REDACTED") {
+				t.Fatalf("formatted client = %q, want redaction marker", output)
+			}
+		})
 	}
 }
 

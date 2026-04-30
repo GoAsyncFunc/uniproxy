@@ -137,6 +137,98 @@ func TestSanitizeErrorRedactsEmbeddedSecrets(t *testing.T) {
 	}
 }
 
+func TestRedactEmbeddedSecretsCoversDirectFormats(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		secret string
+	}{
+		{name: "bearer query", input: "authorization=Bearer secret-token", secret: "secret-token"},
+		{name: "json authorization", input: `{"authorization":"Bearer secret-token"}`, secret: "secret-token"},
+		{name: "json client secret", input: `{"client_secret":"secret-token"}`, secret: "secret-token"},
+		{name: "json password with spaces", input: `{"password":"correct horse battery staple"}`, secret: "horse battery staple"},
+		{name: "json password with escaped quote", input: `{"password":"prefix \"remaining secret with spaces"}`, secret: "remaining secret with spaces"},
+		{name: "json password with apostrophe", input: `{"password":"prefix 'remaining secret with spaces"}`, secret: "remaining secret with spaces"},
+		{name: "x api key query", input: "x-api-key=secret-token", secret: "secret-token"},
+		{name: "url userinfo", input: "https://user:password@example.com/config", secret: "user:password"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := redactEmbeddedSecrets(tt.input)
+			if strings.Contains(got, tt.secret) {
+				t.Fatalf("redacted value leaked %q in %q", tt.secret, got)
+			}
+			if !strings.Contains(got, "REDACTED") {
+				t.Fatalf("redacted value = %q, want REDACTED", got)
+			}
+		})
+	}
+}
+
+func TestSanitizeAPIErrorMessageRedactsAndTruncates(t *testing.T) {
+	secret := "secret-token"
+	message := "token=" + secret + "&" + strings.Repeat("a", maxAPIErrorMessageBytes+100)
+
+	got := sanitizeAPIErrorMessage(message)
+	if strings.Contains(got, secret) {
+		t.Fatalf("message leaked secret in %q", got)
+	}
+	if !strings.Contains(got, "token=REDACTED") {
+		t.Fatalf("message = %q, want redacted token", got)
+	}
+	if !strings.Contains(got, "[truncated]") {
+		t.Fatalf("message = %q, want truncation marker", got)
+	}
+}
+
+func TestAPIErrorConstructorsRedactMessage(t *testing.T) {
+	message := `panel failed with token=secret-token and {"client_secret":"secret-client"}`
+	tests := []struct {
+		name string
+		err  *APIError
+	}{
+		{name: "business logic", err: NewBusinessLogicError(message, "https://example.com")},
+		{name: "api error", err: NewAPIError(http.StatusBadGateway, ErrorTypeServerError, message, "https://example.com", nil)},
+		{name: "status code", err: NewAPIErrorFromStatusCode(http.StatusBadGateway, message, "https://example.com", nil)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for name, value := range map[string]string{
+				"Message":  tt.err.Message,
+				"Error":    tt.err.Error(),
+				"GoString": fmt.Sprintf("%#v", tt.err),
+			} {
+				for _, secret := range []string{"secret-token", "secret-client"} {
+					if strings.Contains(value, secret) {
+						t.Fatalf("%s leaked %q in %q", name, secret, value)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestNewBusinessLogicErrorRedactsURL(t *testing.T) {
+	err := NewBusinessLogicError("failed", "https://user:password@example.com/config?client_secret=secret-token&x-api-key=secret-key&node_id=1")
+
+	for name, value := range map[string]string{
+		"URL":      err.URL,
+		"Error":    err.Error(),
+		"GoString": fmt.Sprintf("%#v", err),
+	} {
+		for _, secret := range []string{"user:password", "secret-token", "secret-key"} {
+			if strings.Contains(value, secret) {
+				t.Fatalf("%s leaked %q in %q", name, secret, value)
+			}
+		}
+		if !strings.Contains(value, "REDACTED") {
+			t.Fatalf("%s = %q, want REDACTED", name, value)
+		}
+	}
+}
+
 func TestAPIError_IsServerError(t *testing.T) {
 	tests := []struct {
 		name       string

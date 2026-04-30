@@ -30,13 +30,22 @@ func validateConfig(c *Config) error {
 	}
 	parsed, err := url.Parse(c.APIHost)
 	if err != nil {
-		return fmt.Errorf("invalid api host: %w", err)
+		return errors.New("invalid api host")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return fmt.Errorf("api host scheme must be http or https: %s", parsed.Scheme)
 	}
-	if parsed.Host == "" {
+	if parsed.Host == "" || parsed.Hostname() == "" {
 		return errors.New("api host must include host")
+	}
+	if parsed.EscapedPath() != "" && parsed.EscapedPath() != "/" {
+		return errors.New("api host must not include path")
+	}
+	if parsed.User != nil {
+		return errors.New("api host must not include userinfo")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("api host must not include query or fragment")
 	}
 	if parsed.Scheme == "http" && !isLocalHTTPHost(parsed.Hostname()) {
 		return fmt.Errorf("api host must use https unless host is localhost or loopback: %s", parsed.Scheme)
@@ -61,6 +70,7 @@ func validateUserList(userlist *UserListBody) error {
 		return errors.New("user list is nil")
 	}
 	seen := make(map[int]struct{}, len(userlist.Users))
+	seenUUID := make(map[string]struct{}, len(userlist.Users))
 	for i := range userlist.Users {
 		user := userlist.Users[i]
 		if user.Id <= 0 {
@@ -81,7 +91,12 @@ func validateUserList(userlist *UserListBody) error {
 		if _, ok := seen[user.Id]; ok {
 			return fmt.Errorf("duplicate user id: %d", user.Id)
 		}
+		normalizedUUID := strings.ToLower(user.Uuid)
+		if _, ok := seenUUID[normalizedUUID]; ok {
+			return fmt.Errorf("duplicate user uuid for id %d", user.Id)
+		}
 		seen[user.Id] = struct{}{}
+		seenUUID[normalizedUUID] = struct{}{}
 	}
 	return nil
 }

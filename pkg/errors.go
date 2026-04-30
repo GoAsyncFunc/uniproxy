@@ -29,11 +29,13 @@ const (
 const maxAPIErrorMessageBytes = 8 * 1024
 
 var (
-	embeddedBearerQueryPattern = regexp.MustCompile(`(?i)((?:auth|authorization)\s*=\s*Bearer\s+)[^&\s"']+`)
-	embeddedBearerColonPattern = regexp.MustCompile(`(?i)((?:["']?(?:auth|authorization)["']?)\s*:\s*["']?Bearer\s+)[^,"'\r\n\s}]+`)
-	embeddedSecretQueryPattern = regexp.MustCompile(`(?i)(token|key|auth|authorization|access_token|api_key|apikey|client_secret|refresh_token|id_token|secret|password|signature|sig)=([^&\s"']+)`)
-	embeddedSecretColonPattern = regexp.MustCompile(`(?i)(["']?(?:token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|secret|password|signature|sig)["']?\s*:\s*["']?)([^,"'\s}]+)`)
-	embeddedURLUserinfoPattern = regexp.MustCompile(`(?i)(https?://)[^\s/@]+@`)
+	embeddedBearerQueryPattern             = regexp.MustCompile(`(?i)((?:auth|authorization)\s*=\s*Bearer\s+)[^&\s"']+`)
+	embeddedBearerColonPattern             = regexp.MustCompile(`(?i)((?:["']?(?:auth|authorization)["']?)\s*:\s*["']?Bearer\s+)[^,"'\r\n\s}]+`)
+	embeddedSecretQueryPattern             = regexp.MustCompile(`(?i)(token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|secret|password|signature|sig)=([^&\s"']+)`)
+	embeddedSecretDoubleQuotedColonPattern = regexp.MustCompile(`(?i)(["']?(?:token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|secret|password|signature|sig)["']?\s*:\s*")(?:\\.|[^"\\\r\n}])*`)
+	embeddedSecretSingleQuotedColonPattern = regexp.MustCompile(`(?i)(["']?(?:token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|secret|password|signature|sig)["']?\s*:\s*')(?:\\.|[^'\\\r\n}])*`)
+	embeddedSecretColonPattern             = regexp.MustCompile(`(?i)(["']?(?:token|key|auth|authorization|access_token|api_key|apikey|x-api-key|client_secret|refresh_token|id_token|secret|password|signature|sig)["']?\s*:\s*)([^,"'\s}]+)`)
+	embeddedURLUserinfoPattern             = regexp.MustCompile(`(?i)(https?://)[^\s/@]+@`)
 )
 
 // APIError custom API error type
@@ -63,6 +65,7 @@ func redactURL(rawURL string) string {
 		return redactEmbeddedSecrets(rawURL)
 	}
 	parsed.User = nil
+	parsed.Fragment = ""
 	values := parsed.Query()
 	for key := range values {
 		if isSensitiveQueryKey(key) {
@@ -128,13 +131,15 @@ func redactEmbeddedSecrets(value string) string {
 	value = embeddedURLUserinfoPattern.ReplaceAllString(value, "${1}REDACTED@")
 	value = embeddedBearerColonPattern.ReplaceAllString(value, "${1}REDACTED")
 	value = embeddedBearerQueryPattern.ReplaceAllString(value, "${1}REDACTED")
+	value = embeddedSecretDoubleQuotedColonPattern.ReplaceAllString(value, "${1}REDACTED")
+	value = embeddedSecretSingleQuotedColonPattern.ReplaceAllString(value, "${1}REDACTED")
 	value = embeddedSecretColonPattern.ReplaceAllString(value, "${1}REDACTED")
 	return embeddedSecretQueryPattern.ReplaceAllString(value, "$1=REDACTED")
 }
 
 func isSensitiveQueryKey(key string) bool {
 	switch strings.ToLower(key) {
-	case "token", "key", "auth", "authorization", "access_token", "api_key", "apikey", "client_secret", "refresh_token", "id_token", "secret", "password", "signature", "sig":
+	case "token", "key", "auth", "authorization", "access_token", "api_key", "apikey", "x-api-key", "client_secret", "refresh_token", "id_token", "secret", "password", "signature", "sig":
 		return true
 	default:
 		return false
@@ -171,8 +176,8 @@ func NewAPIError(statusCode int, errorType ErrorType, message string, url string
 	return &APIError{
 		StatusCode: statusCode,
 		Type:       errorType,
-		Message:    message,
-		URL:        url,
+		Message:    sanitizeAPIErrorMessage(message),
+		URL:        redactURL(url),
 		Err:        sanitizeWrappedError(err),
 	}
 }

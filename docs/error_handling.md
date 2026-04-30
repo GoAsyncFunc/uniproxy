@@ -172,17 +172,13 @@ func callAPIWithRetry(client *pkg.Client) error {
 
 ### Error Wrapping Support
 
-`APIError` implements the `errors.Unwrap()` interface, supporting Go's standard error wrapping:
+`APIError` implements the `errors.Unwrap()` interface with sanitized lower-level error text. Arbitrary underlying error identity is not preserved, because network errors can include raw URLs. Safe sentinel matching is preserved for known cases:
 
 ```go
-import "syscall"
-
-// Example: Check for specific underlying error
 var apiErr *pkg.APIError
 if errors.As(err, &apiErr) {
-    // Use errors.Is to check for specific underlying errors without logging raw lower-level error text
-    if errors.Is(apiErr, syscall.ECONNREFUSED) {
-        fmt.Println("Connection refused")
+    if errors.Is(apiErr, context.DeadlineExceeded) {
+        fmt.Println("Request timed out")
     }
 }
 ```

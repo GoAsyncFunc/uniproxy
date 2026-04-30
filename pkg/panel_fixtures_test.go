@@ -2,6 +2,8 @@ package pkg
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,6 +39,112 @@ func TestPanelFixtures(t *testing.T) {
 			assertParsedFixture(t, fixture, info, common)
 		})
 	}
+}
+
+func TestRealPanelFixturesAreSanitized(t *testing.T) {
+	unsafeFixtures := map[string][]byte{
+		"token and host":           []byte(`{"token":"production-token","host":"panel.internal"}`),
+		"protocol secrets":         []byte(`{"obfs-password":"real-password","mldsa65Seed":"real-seed","ticket":"real-ticket","password":"real-password"}`),
+		"endpoint host":            []byte(`{"dest":"internal.panel:443"}`),
+		"invalid documentation ip": []byte(`{"host":"192.0.2.evil"}`),
+	}
+	for name, body := range unsafeFixtures {
+		t.Run("rejects "+name, func(t *testing.T) {
+			if err := realPanelFixtureSanitizationError(body); err == nil {
+				t.Fatal("expected unsafe fixture to be rejected")
+			}
+		})
+	}
+
+	fixtures := loadPanelFixtures(t)
+	for _, fixture := range fixtures {
+		if !strings.Contains(filepath.ToSlash(fixture.Path), "/real/") {
+			continue
+		}
+		t.Run(fixture.Name, func(t *testing.T) {
+			if err := realPanelFixtureSanitizationError(fixture.Body); err != nil {
+				t.Fatalf("real fixture is not sanitized: %v", err)
+			}
+		})
+	}
+}
+
+func realPanelFixtureSanitizationError(body []byte) error {
+	var value any
+	if err := json.Unmarshal(body, &value); err != nil {
+		return fmt.Errorf("decode fixture json: %w", err)
+	}
+	return validateSanitizedFixtureValue("", value)
+}
+
+func validateSanitizedFixtureValue(key string, value any) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		for childKey, childValue := range typed {
+			if err := validateSanitizedFixtureValue(childKey, childValue); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, childValue := range typed {
+			if err := validateSanitizedFixtureValue(key, childValue); err != nil {
+				return err
+			}
+		}
+	case string:
+		if !isSanitizedFixtureString(key, typed) {
+			return fmt.Errorf("field %q contains unsanitized value %q", key, typed)
+		}
+	}
+	return nil
+}
+
+func isSanitizedFixtureString(key string, value string) bool {
+	if value == "" {
+		return true
+	}
+	normalizedKey := normalizeFixtureKey(key)
+	if isSensitiveFixtureKey(normalizedKey) {
+		return strings.HasPrefix(value, "fixture-")
+	}
+	if isHostFixtureKey(normalizedKey) {
+		return value == "example.com" || strings.HasSuffix(value, ".example.com") || isDocumentationIP(value)
+	}
+	return true
+}
+
+func normalizeFixtureKey(key string) string {
+	key = strings.ToLower(key)
+	key = strings.ReplaceAll(key, "-", "_")
+	return key
+}
+
+func isSensitiveFixtureKey(key string) bool {
+	switch key {
+	case "token", "key", "private_key", "privatekey", "server_key", "serverkey", "client_secret", "authorization", "password", "pass", "secret", "obfs_password", "mldsa65seed", "ticket", "auth", "api_key", "apikey", "access_token", "refresh_token", "id_token", "signature", "sig":
+		return true
+	default:
+		return false
+	}
+}
+
+func isHostFixtureKey(key string) bool {
+	switch key {
+	case "host", "server_name", "servername", "sni", "dest", "address", "server", "servers", "url", "endpoint", "origin":
+		return true
+	default:
+		return false
+	}
+}
+
+func isDocumentationIP(value string) bool {
+	ip := net.ParseIP(value)
+	return ip != nil && (isIPv4DocumentationRange(ip, 192, 0, 2) || isIPv4DocumentationRange(ip, 198, 51, 100) || isIPv4DocumentationRange(ip, 203, 0, 113))
+}
+
+func isIPv4DocumentationRange(ip net.IP, a byte, b byte, c byte) bool {
+	ipv4 := ip.To4()
+	return ipv4 != nil && ipv4[0] == a && ipv4[1] == b && ipv4[2] == c
 }
 
 func loadPanelFixtures(t *testing.T) []panelFixture {

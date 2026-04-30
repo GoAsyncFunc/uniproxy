@@ -57,17 +57,48 @@ func ipv4FirstTransport() *http.Transport {
 	return transport
 }
 
+type redactedRestyClient struct {
+	*resty.Client
+}
+
+func (c redactedRestyClient) String() string {
+	return "REDACTED"
+}
+
+func (c redactedRestyClient) GoString() string {
+	return "REDACTED"
+}
+
+type sensitiveToken struct {
+	value string
+}
+
+func (t *sensitiveToken) raw() string {
+	if t == nil {
+		return ""
+	}
+	return t.value
+}
+
+func (t *sensitiveToken) String() string {
+	return "REDACTED"
+}
+
+func (t *sensitiveToken) GoString() string {
+	return "REDACTED"
+}
+
 type clientConfig struct {
 	apiHost   string
 	apiSendIP string
-	token     string
+	token     *sensitiveToken
 	nodeType  string
 	nodeID    int
 }
 
 // Client APIClient create a api client to the panel.
 type Client struct {
-	client *resty.Client
+	client *redactedRestyClient
 	config clientConfig
 
 	// Deprecated: this field is informational; mutating it does not affect client behavior.
@@ -91,6 +122,20 @@ type Client struct {
 	userBodyHash     string
 	userList         *UserListBody
 	handlers         map[string]NodeHandler
+}
+
+func (c *Client) String() string {
+	if c == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("&{APIHost:%s APISendIP:%s Token:REDACTED NodeType:%s NodeId:%d}", redactURL(c.APIHost), c.APISendIP, c.NodeType, c.NodeId)
+}
+
+func (c *Client) GoString() string {
+	if c == nil {
+		return "(*pkg.Client)(nil)"
+	}
+	return fmt.Sprintf("&pkg.Client{APIHost:%q, APISendIP:%q, Token:REDACTED, NodeType:%q, NodeId:%d}", redactURL(c.APIHost), c.APISendIP, c.NodeType, c.NodeId)
 }
 
 func normalizeNodeType(nodeType string) (string, bool) {
@@ -163,15 +208,15 @@ func New(c *Config) *Client {
 	}
 
 	return &Client{
-		client: client,
+		client: &redactedRestyClient{Client: client},
 		config: clientConfig{
 			apiHost:   c.APIHost,
 			apiSendIP: c.APISendIP,
-			token:     c.Key,
+			token:     &sensitiveToken{value: c.Key},
 			nodeType:  nodeType,
 			nodeID:    c.NodeID,
 		},
-		Token:     c.Key,
+		Token:     "REDACTED",
 		APIHost:   c.APIHost,
 		APISendIP: c.APISendIP,
 		NodeType:  nodeType,
@@ -267,7 +312,7 @@ func normalizeContext(ctx context.Context) context.Context {
 func (c *Client) newRequest(ctx context.Context) *resty.Request {
 	return c.client.R().
 		SetContext(normalizeContext(ctx)).
-		SetHeader(headerAuthorization, "Bearer "+c.config.token).
+		SetHeader(headerAuthorization, "Bearer "+c.config.token.raw()).
 		ForceContentType(contentTypeJSON)
 }
 
