@@ -18,14 +18,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-type AuthMode int
-
-const (
-	AuthModeQueryOnly AuthMode = iota
-	AuthModeHeaderOnly
-	AuthModeLegacyDual
-)
-
 // Config  api config
 type Config struct {
 	APIHost   string
@@ -35,7 +27,6 @@ type Config struct {
 	NodeType  string
 	Timeout   int // seconds
 	Debug     bool
-	AuthMode  AuthMode
 }
 
 const (
@@ -46,7 +37,6 @@ const (
 	apiAliveListPath     = "/api/v1/server/uniProxy/alivelist"
 	headerIfNoneMatch    = "If-None-Match"
 	headerETag           = "ETag"
-	headerAuthorization  = "Authorization"
 	contentTypeJSON      = "application/json"
 	getRetryCount        = 2
 	getRetryBackoff      = 10 * time.Millisecond
@@ -78,32 +68,11 @@ func (c redactedRestyClient) GoString() string {
 	return "REDACTED"
 }
 
-type sensitiveToken struct {
-	value string
-}
-
-func (t *sensitiveToken) raw() string {
-	if t == nil {
-		return ""
-	}
-	return t.value
-}
-
-func (t *sensitiveToken) String() string {
-	return "REDACTED"
-}
-
-func (t *sensitiveToken) GoString() string {
-	return "REDACTED"
-}
-
 type clientConfig struct {
 	apiHost   string
 	apiSendIP string
-	token     *sensitiveToken
 	nodeType  string
 	nodeID    int
-	authMode  AuthMode
 }
 
 // Client APIClient create a api client to the panel.
@@ -146,14 +115,6 @@ func (c *Client) GoString() string {
 		return "(*pkg.Client)(nil)"
 	}
 	return fmt.Sprintf("&pkg.Client{APIHost:%q, APISendIP:%q, Token:REDACTED, NodeType:%q, NodeId:%d}", redactURL(c.APIHost), c.APISendIP, c.NodeType, c.NodeId)
-}
-
-func (m AuthMode) sendsQueryToken() bool {
-	return m == AuthModeLegacyDual || m == AuthModeQueryOnly
-}
-
-func (m AuthMode) sendsAuthorizationHeader() bool {
-	return m == AuthModeLegacyDual || m == AuthModeHeaderOnly
 }
 
 func normalizeNodeType(nodeType string) (string, bool) {
@@ -215,14 +176,11 @@ func New(c *Config) *Client {
 		log.Warnf("Unknown Node type: %s", nodeType)
 	}
 
-	queryParams := map[string]string{
+	client.SetQueryParams(map[string]string{
 		"node_type": nodeType,
 		"node_id":   strconv.Itoa(c.NodeID),
-	}
-	if c.AuthMode.sendsQueryToken() {
-		queryParams["token"] = c.Key
-	}
-	client.SetQueryParams(queryParams)
+		"token":     c.Key,
+	})
 
 	if c.Debug {
 		log.Warn("request debug logging is disabled because it can expose authentication credentials and tokens")
@@ -233,10 +191,8 @@ func New(c *Config) *Client {
 		config: clientConfig{
 			apiHost:   c.APIHost,
 			apiSendIP: c.APISendIP,
-			token:     &sensitiveToken{value: c.Key},
 			nodeType:  nodeType,
 			nodeID:    c.NodeID,
-			authMode:  c.AuthMode,
 		},
 		Token:     "REDACTED",
 		APIHost:   c.APIHost,
@@ -332,13 +288,9 @@ func normalizeContext(ctx context.Context) context.Context {
 }
 
 func (c *Client) newRequest(ctx context.Context) *resty.Request {
-	req := c.client.R().
+	return c.client.R().
 		SetContext(normalizeContext(ctx)).
 		ForceContentType(contentTypeJSON)
-	if c.config.authMode.sendsAuthorizationHeader() {
-		req.SetHeader(headerAuthorization, "Bearer "+c.config.token.raw())
-	}
-	return req
 }
 
 func (c *Client) getWithRetry(ctx context.Context, path string, configure func(*resty.Request)) (*resty.Response, error) {

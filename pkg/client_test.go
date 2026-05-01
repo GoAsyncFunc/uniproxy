@@ -176,26 +176,6 @@ func TestNewWithError_RejectsRemoteHTTP(t *testing.T) {
 	}
 }
 
-func TestSensitiveTokenFormattingRedactsRawValue(t *testing.T) {
-	token := &sensitiveToken{value: "secret-token"}
-
-	for name, value := range map[string]string{
-		"String":   fmt.Sprint(token),
-		"format":   fmt.Sprintf("%+v", token),
-		"GoString": fmt.Sprintf("%#v", token),
-	} {
-		if strings.Contains(value, "secret-token") {
-			t.Fatalf("%s leaked token in %q", name, value)
-		}
-		if !strings.Contains(value, "REDACTED") {
-			t.Fatalf("%s = %q, want REDACTED", name, value)
-		}
-	}
-	if token.raw() != "secret-token" {
-		t.Fatalf("raw token = %q", token.raw())
-	}
-}
-
 func TestRedactedRestyClientFormatting(t *testing.T) {
 	client := redactedRestyClient{Client: resty.New()}
 
@@ -1278,9 +1258,6 @@ func TestClient_ReportNodeOnlineUsers_PostsAlivePayload(t *testing.T) {
 		if got := r.URL.Query().Get("token"); got != "test-token" {
 			t.Fatalf("token query = %q", got)
 		}
-		if got := r.Header.Get(headerAuthorization); got != "" {
-			t.Fatalf("Authorization header = %q", got)
-		}
 
 		var body map[int][]string
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1387,9 +1364,6 @@ func TestClient_GetRequestsUseConstructionSnapshot(t *testing.T) {
 		if got := r.URL.Query().Get("node_type"); got != "vless" {
 			requestErrors = append(requestErrors, fmt.Sprintf("node_type query = %q", got))
 		}
-		if got := r.Header.Get(headerAuthorization); got != "" {
-			requestErrors = append(requestErrors, fmt.Sprintf("Authorization header = %q", got))
-		}
 		if requestCount == 1 && r.Header.Get(headerIfNoneMatch) != "" {
 			requestErrors = append(requestErrors, fmt.Sprintf("first If-None-Match = %q", r.Header.Get(headerIfNoneMatch)))
 		}
@@ -1430,9 +1404,6 @@ func TestClient_GetNodeInfoUsesConstructionSnapshot(t *testing.T) {
 		if got := r.URL.Query().Get("node_id"); got != "7" {
 			requestErrors = append(requestErrors, fmt.Sprintf("node_id query = %q", got))
 		}
-		if got := r.Header.Get(headerAuthorization); got != "" {
-			requestErrors = append(requestErrors, fmt.Sprintf("Authorization header = %q", got))
-		}
 		_, _ = w.Write([]byte(`{"server_port":443,"tls":2,"server_name":"example.com","network":"tcp","encryption":"none"}`))
 	}))
 	defer server.Close()
@@ -1451,63 +1422,6 @@ func TestClient_GetNodeInfoUsesConstructionSnapshot(t *testing.T) {
 	}
 	if len(requestErrors) > 0 {
 		t.Fatalf("request errors: %s", strings.Join(requestErrors, "; "))
-	}
-}
-
-func TestClient_ConfigurableAuthModes(t *testing.T) {
-	tests := []struct {
-		name       string
-		authMode   AuthMode
-		wantQuery  string
-		wantHeader string
-	}{
-		{name: "default query only", wantQuery: "token"},
-		{name: "explicit dual", authMode: AuthModeLegacyDual, wantQuery: "token", wantHeader: "Bearer token"},
-		{name: "header only", authMode: AuthModeHeaderOnly, wantHeader: "Bearer token"},
-		{name: "query only", authMode: AuthModeQueryOnly, wantQuery: "token"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var requestErrors []string
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if got := r.URL.Query().Get("node_id"); got != "7" {
-					requestErrors = append(requestErrors, fmt.Sprintf("node_id query = %q", got))
-				}
-				if got := r.URL.Query().Get("node_type"); got != "vless" {
-					requestErrors = append(requestErrors, fmt.Sprintf("node_type query = %q", got))
-				}
-				if got := r.URL.Query().Get("token"); got != tt.wantQuery {
-					requestErrors = append(requestErrors, fmt.Sprintf("token query = %q", got))
-				}
-				if got := r.Header.Get(headerAuthorization); got != tt.wantHeader {
-					requestErrors = append(requestErrors, fmt.Sprintf("Authorization header = %q", got))
-				}
-				_, _ = w.Write([]byte(`{"server_port":443,"tls":2,"server_name":"example.com","network":"tcp","encryption":"none"}`))
-			}))
-			defer server.Close()
-
-			client := New(&Config{APIHost: server.URL, Key: "token", NodeID: 7, NodeType: "vless", Timeout: 1, AuthMode: tt.authMode})
-			if client == nil {
-				t.Fatal("client is nil")
-			}
-			if _, err := client.GetNodeInfo(context.Background()); err != nil {
-				t.Fatalf("GetNodeInfo failed: %v", err)
-			}
-			if len(requestErrors) > 0 {
-				t.Fatalf("request errors: %s", strings.Join(requestErrors, "; "))
-			}
-		})
-	}
-}
-
-func TestNewWithError_RejectsInvalidAuthMode(t *testing.T) {
-	client, err := NewWithError(&Config{APIHost: "http://127.0.0.1", Key: "secret-token", NodeID: 1, NodeType: "vless", AuthMode: AuthMode(99)})
-	if err == nil {
-		t.Fatalf("expected error, got client %#v", client)
-	}
-	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "99") {
-		t.Fatalf("error leaked raw auth details: %q", err.Error())
 	}
 }
 
@@ -1718,9 +1632,6 @@ func TestClient_ReportUserTraffic_PostsPushPayload(t *testing.T) {
 		}
 		if got := r.URL.Query().Get("token"); got != "token" {
 			t.Fatalf("token query = %q", got)
-		}
-		if got := r.Header.Get(headerAuthorization); got != "" {
-			t.Fatalf("Authorization header = %q", got)
 		}
 		var body map[int][]int64
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

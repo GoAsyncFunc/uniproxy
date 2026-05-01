@@ -59,9 +59,6 @@ func validateConfig(c *Config) error {
 	if _, ok := normalizeNodeType(c.NodeType); !ok {
 		return errors.New("unsupported node type")
 	}
-	if c.AuthMode != AuthModeLegacyDual && c.AuthMode != AuthModeHeaderOnly && c.AuthMode != AuthModeQueryOnly {
-		return errors.New("unsupported auth mode")
-	}
 	if c.APISendIP != "" && net.ParseIP(c.APISendIP) == nil {
 		return errors.New("invalid api send ip")
 	}
