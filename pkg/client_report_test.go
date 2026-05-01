@@ -133,7 +133,6 @@ func TestClient_ReportNodeOnlineUsers_RejectsInvalidPayload(t *testing.T) {
 		name string
 		data map[int][]string
 	}{
-		{name: "nil data", data: nil},
 		{name: "zero uid", data: map[int][]string{0: {"203.0.113.1_1"}}},
 		{name: "negative uid", data: map[int][]string{-1: {"203.0.113.1_1"}}},
 		{name: "empty users", data: map[int][]string{1: {}}},
@@ -169,20 +168,10 @@ func TestClient_ReportNodeOnlineUsers_RejectsInvalidPayload(t *testing.T) {
 	}
 }
 
-func TestClient_ReportNodeOnlineUsers_EmptyMapPostsPayload(t *testing.T) {
+func TestClient_ReportNodeOnlineUsers_EmptyMapSkipsRequest(t *testing.T) {
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
-		if r.URL.Path != apiAlivePath {
-			t.Fatalf("path = %q, want %q", r.URL.Path, apiAlivePath)
-		}
-		var body map[int][]string
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if len(body) != 0 {
-			t.Fatalf("body = %#v, want empty map", body)
-		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
@@ -191,8 +180,8 @@ func TestClient_ReportNodeOnlineUsers_EmptyMapPostsPayload(t *testing.T) {
 	if err := client.ReportNodeOnlineUsers(context.Background(), map[int][]string{}); err != nil {
 		t.Fatalf("ReportNodeOnlineUsers failed: %v", err)
 	}
-	if !called {
-		t.Fatal("server was not called for empty online users")
+	if called {
+		t.Fatal("server should not be called for empty online users")
 	}
 }
 

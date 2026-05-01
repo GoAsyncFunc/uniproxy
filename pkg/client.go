@@ -494,6 +494,12 @@ func cloneOnlineUsers(data map[int][]string) map[int][]string {
 }
 
 func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]string) error {
+	if len(data) == 0 {
+		// Skip request when no online users; v2board's alive endpoint hits
+		// Cache::many([]) on empty payload and panels with strict cache drivers
+		// return HTTP 500.
+		return nil
+	}
 	if err := validateOnlineUsers(data); err != nil {
 		return err
 	}
