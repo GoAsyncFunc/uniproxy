@@ -20,3 +20,4 @@ cmd/server/server
 CLAUDE.md
 .claude/
 .worktrees/
+docs/superpowers/
