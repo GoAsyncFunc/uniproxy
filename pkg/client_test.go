@@ -279,10 +279,10 @@ func TestNewWithError_AcceptsSupportedNodeTypes(t *testing.T) {
 func TestClient_Concurrency(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/server/UniProxy/config":
+		case apiConfigPath:
 			w.Header().Set("ETag", "123")
 			_, _ = w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))
-		case "/api/v1/server/UniProxy/user":
+		case apiUserPath:
 			w.Header().Set("ETag", "456")
 			_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440000"}]}`))
 		default:
@@ -663,7 +663,7 @@ func TestClient_304NotModified(t *testing.T) {
 	userCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/server/UniProxy/config":
+		case apiConfigPath:
 			configCalls++
 			if configCalls > 1 {
 				w.WriteHeader(http.StatusNotModified)
@@ -671,7 +671,7 @@ func TestClient_304NotModified(t *testing.T) {
 			}
 			w.Header().Set("ETag", "etag-1")
 			_, _ = w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))
-		case "/api/v1/server/UniProxy/user":
+		case apiUserPath:
 			userCalls++
 			if userCalls > 1 {
 				w.WriteHeader(http.StatusNotModified)
@@ -972,14 +972,14 @@ func TestClient_RetriesGetButNotPost(t *testing.T) {
 	pushCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/server/UniProxy/config":
+		case apiConfigPath:
 			configCalls++
 			if configCalls == 1 {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
 			_, _ = w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))
-		case "/api/v1/server/UniProxy/push":
+		case apiPushPath:
 			pushCalls++
 			w.WriteHeader(http.StatusBadGateway)
 		default:
@@ -1278,7 +1278,7 @@ func TestClient_ReportNodeOnlineUsers_PostsAlivePayload(t *testing.T) {
 		if got := r.URL.Query().Get("token"); got != "test-token" {
 			t.Fatalf("token query = %q", got)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+		if got := r.Header.Get(headerAuthorization); got != "" {
 			t.Fatalf("Authorization header = %q", got)
 		}
 
@@ -1387,7 +1387,7 @@ func TestClient_GetRequestsUseConstructionSnapshot(t *testing.T) {
 		if got := r.URL.Query().Get("node_type"); got != "vless" {
 			requestErrors = append(requestErrors, fmt.Sprintf("node_type query = %q", got))
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+		if got := r.Header.Get(headerAuthorization); got != "" {
 			requestErrors = append(requestErrors, fmt.Sprintf("Authorization header = %q", got))
 		}
 		if requestCount == 1 && r.Header.Get(headerIfNoneMatch) != "" {
@@ -1430,7 +1430,7 @@ func TestClient_GetNodeInfoUsesConstructionSnapshot(t *testing.T) {
 		if got := r.URL.Query().Get("node_id"); got != "7" {
 			requestErrors = append(requestErrors, fmt.Sprintf("node_id query = %q", got))
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+		if got := r.Header.Get(headerAuthorization); got != "" {
 			requestErrors = append(requestErrors, fmt.Sprintf("Authorization header = %q", got))
 		}
 		_, _ = w.Write([]byte(`{"server_port":443,"tls":2,"server_name":"example.com","network":"tcp","encryption":"none"}`))
@@ -1461,7 +1461,7 @@ func TestClient_ConfigurableAuthModes(t *testing.T) {
 		wantQuery  string
 		wantHeader string
 	}{
-		{name: "default dual", wantQuery: "token", wantHeader: "Bearer token"},
+		{name: "default query only", wantQuery: "token"},
 		{name: "explicit dual", authMode: AuthModeLegacyDual, wantQuery: "token", wantHeader: "Bearer token"},
 		{name: "header only", authMode: AuthModeHeaderOnly, wantHeader: "Bearer token"},
 		{name: "query only", authMode: AuthModeQueryOnly, wantQuery: "token"},
@@ -1480,7 +1480,7 @@ func TestClient_ConfigurableAuthModes(t *testing.T) {
 				if got := r.URL.Query().Get("token"); got != tt.wantQuery {
 					requestErrors = append(requestErrors, fmt.Sprintf("token query = %q", got))
 				}
-				if got := r.Header.Get("Authorization"); got != tt.wantHeader {
+				if got := r.Header.Get(headerAuthorization); got != tt.wantHeader {
 					requestErrors = append(requestErrors, fmt.Sprintf("Authorization header = %q", got))
 				}
 				_, _ = w.Write([]byte(`{"server_port":443,"tls":2,"server_name":"example.com","network":"tcp","encryption":"none"}`))
@@ -1719,7 +1719,7 @@ func TestClient_ReportUserTraffic_PostsPushPayload(t *testing.T) {
 		if got := r.URL.Query().Get("token"); got != "token" {
 			t.Fatalf("token query = %q", got)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+		if got := r.Header.Get(headerAuthorization); got != "" {
 			t.Fatalf("Authorization header = %q", got)
 		}
 		var body map[int][]int64
@@ -1743,7 +1743,7 @@ func TestClient_ReportUserTraffic_PostsPushPayload(t *testing.T) {
 
 func TestClient_GetAliveList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/server/UniProxy/alivelist" {
+		if r.URL.Path != apiAliveListPath {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}

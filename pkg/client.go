@@ -21,9 +21,9 @@ import (
 type AuthMode int
 
 const (
-	AuthModeLegacyDual AuthMode = iota
+	AuthModeQueryOnly AuthMode = iota
 	AuthModeHeaderOnly
-	AuthModeQueryOnly
+	AuthModeLegacyDual
 )
 
 // Config  api config
@@ -39,11 +39,11 @@ type Config struct {
 }
 
 const (
-	apiConfigPath        = "/api/v1/server/UniProxy/config"
-	apiUserPath          = "/api/v1/server/UniProxy/user"
-	apiPushPath          = "/api/v1/server/UniProxy/push"
-	apiAlivePath         = "/api/v1/server/UniProxy/alive"
-	apiAliveListPath     = "/api/v1/server/UniProxy/alivelist"
+	apiConfigPath        = "/api/v1/server/uniProxy/config"
+	apiUserPath          = "/api/v1/server/uniProxy/user"
+	apiPushPath          = "/api/v1/server/uniProxy/push"
+	apiAlivePath         = "/api/v1/server/uniProxy/alive"
+	apiAliveListPath     = "/api/v1/server/uniProxy/alivelist"
 	headerIfNoneMatch    = "If-None-Match"
 	headerETag           = "ETag"
 	headerAuthorization  = "Authorization"
