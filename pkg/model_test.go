@@ -101,6 +101,24 @@ func TestSensitiveModelFormattingRedactsSecrets(t *testing.T) {
 	}
 }
 
+func TestBaseConfigFormattingRedactsIntervals(t *testing.T) {
+	cfg := BaseConfig{PushInterval: "push-secret", PullInterval: "pull-secret"}
+	cases := map[string]string{
+		"String":   cfg.String(),
+		"GoString": cfg.GoString(),
+		"%v":       fmt.Sprintf("%v", cfg),
+		"%#v":      fmt.Sprintf("%#v", cfg),
+	}
+	for name, output := range cases {
+		if strings.Contains(output, "push-secret") || strings.Contains(output, "pull-secret") {
+			t.Fatalf("%s leaked secret: %q", name, output)
+		}
+		if !strings.Contains(output, "REDACTED") {
+			t.Fatalf("%s = %q, want REDACTED", name, output)
+		}
+	}
+}
+
 func TestRouteActionClassification(t *testing.T) {
 	if !IsBlockRouteAction(RouteActionBlock) || !IsBlockRouteAction(RouteActionBlockIP) || !IsBlockRouteAction(RouteActionBlockPort) || !IsBlockRouteAction(RouteActionProtocol) {
 		t.Fatal("expected block actions to be classified as block routes")
