@@ -30,11 +30,11 @@ type Config struct {
 }
 
 const (
-	apiConfigPath        = "/api/v1/server/uniProxy/config"
-	apiUserPath          = "/api/v1/server/uniProxy/user"
-	apiPushPath          = "/api/v1/server/uniProxy/push"
-	apiAlivePath         = "/api/v1/server/uniProxy/alive"
-	apiAliveListPath     = "/api/v1/server/uniProxy/alivelist"
+	apiConfigPath        = "/api/v1/server/UniProxy/config"
+	apiUserPath          = "/api/v1/server/UniProxy/user"
+	apiPushPath          = "/api/v1/server/UniProxy/push"
+	apiAlivePath         = "/api/v1/server/UniProxy/alive"
+	apiAliveListPath     = "/api/v1/server/UniProxy/alivelist"
 	headerIfNoneMatch    = "If-None-Match"
 	headerETag           = "ETag"
 	contentTypeJSON      = "application/json"
