@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 	"time"
 )
@@ -58,7 +59,7 @@ func TestClient_PublicMethodsTreatNilContextAsBackground(t *testing.T) {
 	if err := client.ReportUserTraffic(ctx, []UserTraffic{{UID: 1, Upload: 1, Download: 1}}); err != nil {
 		t.Fatalf("ReportUserTraffic with nil context failed: %v", err)
 	}
-	if err := client.ReportNodeOnlineUsers(ctx, map[int][]string{1: {"203.0.113.1_1"}}); err != nil {
+	if err := client.ReportNodeOnlineUsers(ctx, map[int][]netip.Addr{1: {netip.MustParseAddr("203.0.113.1")}}); err != nil {
 		t.Fatalf("ReportNodeOnlineUsers with nil context failed: %v", err)
 	}
 	alive, err := client.GetAliveList(ctx)

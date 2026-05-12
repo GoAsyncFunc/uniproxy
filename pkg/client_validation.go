@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -234,32 +235,20 @@ func validateUserTraffic(userTraffic []UserTraffic) error {
 	return nil
 }
 
-func validateOnlineUsers(data map[int][]string) error {
+func validateOnlineUsers(data map[int][]netip.Addr) error {
 	if data == nil {
 		return errors.New("online user data is nil")
 	}
-	for uid, users := range data {
+	for uid, ips := range data {
 		if uid <= 0 {
 			return fmt.Errorf("online user uid must be positive: %d", uid)
 		}
-		if len(users) == 0 {
+		if len(ips) == 0 {
 			return fmt.Errorf("online user list is empty for uid %d", uid)
 		}
-		for _, user := range users {
-			parts := strings.Split(user, "_")
-			if len(parts) != 2 {
-				return fmt.Errorf("invalid online user entry for uid %d", uid)
-			}
-			ip := strings.TrimSpace(parts[0])
-			suffix := strings.TrimSpace(parts[1])
-			if parts[0] != ip || parts[1] != suffix || ip == "" || suffix == "" || net.ParseIP(ip) == nil {
-				return fmt.Errorf("invalid online user entry for uid %d", uid)
-			}
-			if strings.HasPrefix(suffix, "+") || strings.HasPrefix(suffix, "-") {
-				return fmt.Errorf("invalid online user entry for uid %d", uid)
-			}
-			if _, err := strconv.Atoi(suffix); err != nil {
-				return fmt.Errorf("invalid online user entry for uid %d", uid)
+		for _, ip := range ips {
+			if !ip.IsValid() {
+				return fmt.Errorf("invalid online user ip for uid %d", uid)
 			}
 		}
 	}

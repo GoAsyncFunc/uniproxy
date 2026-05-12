@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -485,15 +486,19 @@ func (c *Client) ReportUserTraffic(ctx context.Context, userTraffic []UserTraffi
 	return c.checkResponse(r, apiPushPath, err)
 }
 
-func cloneOnlineUsers(data map[int][]string) map[int][]string {
-	cloned := make(map[int][]string, len(data))
-	for uid, users := range data {
-		cloned[uid] = append([]string(nil), users...)
+func buildOnlinePayload(data map[int][]netip.Addr, nodeID int) map[int][]string {
+	out := make(map[int][]string, len(data))
+	for uid, ips := range data {
+		list := make([]string, 0, len(ips))
+		for _, ip := range ips {
+			list = append(list, fmt.Sprintf("%s_%d", ip.String(), nodeID))
+		}
+		out[uid] = list
 	}
-	return cloned
+	return out
 }
 
-func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]string) error {
+func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]netip.Addr) error {
 	if len(data) == 0 {
 		// Skip request when no online users; v2board's alive endpoint hits
 		// Cache::many([]) on empty payload and panels with strict cache drivers
@@ -504,7 +509,7 @@ func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]strin
 		return err
 	}
 	r, err := c.newRequest(ctx).
-		SetBody(cloneOnlineUsers(data)).
+		SetBody(buildOnlinePayload(data, c.config.nodeID)).
 		Post(apiAlivePath)
 
 	return c.checkResponse(r, apiAlivePath, err)

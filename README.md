@@ -62,7 +62,7 @@ The deprecated public `Client.APIHost`, `Client.APISendIP`, `Client.Token`, `Cli
 
 Avoid logging full `Config`, `Client`, or `NodeInfo` values because they can include tokens, private keys, or server keys. Common `Client`, `APIError`, and sensitive model formatters redact known sensitive fields, but callers should still avoid logging full remote panel payloads.
 
-Public methods validate caller and panel data before sending or returning it: `ReportUserTraffic` rejects non-positive or duplicate UIDs and negative counters; `ReportNodeOnlineUsers` rejects nil data, non-positive UIDs, empty user lists, and malformed `IP_suffix` entries; `GetAliveList` rejects malformed alive responses. Caller-input validation errors may be plain errors rather than `APIError`.
+Public methods validate caller and panel data before sending or returning it: `ReportUserTraffic` rejects non-positive or duplicate UIDs and negative counters; `ReportNodeOnlineUsers` rejects nil data, non-positive UIDs, empty IP lists, and invalid `netip.Addr` entries — the library prefixes each IP with the configured `NodeID` before posting; `GetAliveList` rejects malformed alive responses. Caller-input validation errors may be plain errors rather than `APIError`.
 
 ### Production Security Checklist
 
@@ -115,8 +115,8 @@ if err != nil {
 ### 5. Report Online Users and Fetch Alive Counts
 
 ```go
-err := client.ReportNodeOnlineUsers(ctx, map[int][]string{
-	1: {"203.0.113.1_1", "203.0.113.2_1"},
+err := client.ReportNodeOnlineUsers(ctx, map[int][]netip.Addr{
+	1: {netip.MustParseAddr("203.0.113.1"), netip.MustParseAddr("203.0.113.2")},
 })
 if err != nil {
 	log.Printf("Online report failed: %v", err)

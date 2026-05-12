@@ -344,11 +344,6 @@ func TestValidationErrorsDoNotLeakRawExternalValues(t *testing.T) {
 			leaked: []string{"user:pass", "secret", "dns.example.com"},
 		},
 		{
-			name:   "online user entry",
-			err:    validateOnlineUsers(map[int][]string{1: {"203.0.113.1_secret"}}),
-			leaked: []string{"203.0.113.1_secret", "secret"},
-		},
-		{
 			name:   "unsupported route action",
 			err:    validateCommonNode(&CommonNode{ServerPort: 443, Routes: []Route{{Action: "token=secret", Match: []string{"domain:example.com"}}}}),
 			leaked: []string{"token=secret", "secret"},

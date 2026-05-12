@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 )
 
@@ -43,8 +44,8 @@ func TestClient_ReportNodeOnlineUsers_PostsAlivePayload(t *testing.T) {
 		Timeout:  1,
 	})
 
-	err := client.ReportNodeOnlineUsers(context.Background(), map[int][]string{
-		1: {"203.0.113.1_1", "203.0.113.2_1"},
+	err := client.ReportNodeOnlineUsers(context.Background(), map[int][]netip.Addr{
+		1: {netip.MustParseAddr("203.0.113.1"), netip.MustParseAddr("203.0.113.2")},
 	})
 	if err != nil {
 		t.Fatalf("ReportNodeOnlineUsers failed: %v", err)
@@ -113,38 +114,25 @@ func TestClient_ReportUserTraffic_EmptyPayloadIsNoop(t *testing.T) {
 	}
 }
 
-func TestCloneOnlineUsers_DoesNotShareCallerMapOrSlices(t *testing.T) {
-	data := map[int][]string{1: {"203.0.113.1_1"}}
-
-	cloned := cloneOnlineUsers(data)
-	data[1][0] = "not-ip_1"
-	data[2] = []string{"203.0.113.2_1"}
-
-	if got := cloned[1]; len(got) != 1 || got[0] != "203.0.113.1_1" {
-		t.Fatalf("cloned[1] = %#v", got)
+func TestBuildOnlinePayload_FormatsWithNodeID(t *testing.T) {
+	data := map[int][]netip.Addr{
+		1: {netip.MustParseAddr("203.0.113.1"), netip.MustParseAddr("203.0.113.2")},
 	}
-	if _, ok := cloned[2]; ok {
-		t.Fatalf("cloned contains later caller map mutation: %#v", cloned)
+	got := buildOnlinePayload(data, 7)
+	if len(got[1]) != 2 || got[1][0] != "203.0.113.1_7" || got[1][1] != "203.0.113.2_7" {
+		t.Fatalf("got[1] = %#v", got[1])
 	}
 }
 
 func TestClient_ReportNodeOnlineUsers_RejectsInvalidPayload(t *testing.T) {
 	tests := []struct {
 		name string
-		data map[int][]string
+		data map[int][]netip.Addr
 	}{
-		{name: "zero uid", data: map[int][]string{0: {"203.0.113.1_1"}}},
-		{name: "negative uid", data: map[int][]string{-1: {"203.0.113.1_1"}}},
-		{name: "empty users", data: map[int][]string{1: {}}},
-		{name: "empty user entry", data: map[int][]string{1: {""}}},
-		{name: "invalid ip", data: map[int][]string{1: {"not-ip_1"}}},
-		{name: "empty suffix", data: map[int][]string{1: {"203.0.113.1_"}}},
-		{name: "empty ip", data: map[int][]string{1: {"_1"}}},
-		{name: "multiple separators", data: map[int][]string{1: {"203.0.113.1_1_2"}}},
-		{name: "non-numeric suffix", data: map[int][]string{1: {"203.0.113.1_bad"}}},
-		{name: "blank suffix", data: map[int][]string{1: {"203.0.113.1_  "}}},
-		{name: "leading space in ip", data: map[int][]string{1: {" 203.0.113.1_1"}}},
-		{name: "leading space in suffix", data: map[int][]string{1: {"203.0.113.1_ 1"}}},
+		{name: "zero uid", data: map[int][]netip.Addr{0: {netip.MustParseAddr("203.0.113.1")}}},
+		{name: "negative uid", data: map[int][]netip.Addr{-1: {netip.MustParseAddr("203.0.113.1")}}},
+		{name: "empty users", data: map[int][]netip.Addr{1: {}}},
+		{name: "invalid ip", data: map[int][]netip.Addr{1: {netip.Addr{}}}},
 	}
 
 	for _, tt := range tests {
@@ -177,7 +165,7 @@ func TestClient_ReportNodeOnlineUsers_EmptyMapSkipsRequest(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(t, server.URL, "vless")
-	if err := client.ReportNodeOnlineUsers(context.Background(), map[int][]string{}); err != nil {
+	if err := client.ReportNodeOnlineUsers(context.Background(), map[int][]netip.Addr{}); err != nil {
 		t.Fatalf("ReportNodeOnlineUsers failed: %v", err)
 	}
 	if called {
