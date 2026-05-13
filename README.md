@@ -4,11 +4,11 @@ A lightweight, robust Go client for the UniProxy API.
 
 ## Features
 
-- **Node Configuration**: Fetch configurations for VMess, VLESS, Trojan, Shadowsocks, Hysteria, Hysteria2, Tuic, AnyTLS, and more.
-- **User Synchronization**: Efficiently retrieve and manage user lists.
-- **Traffic Reporting**: Reliable user traffic usage reporting.
-- **Health Checks**: Report node online status.
-- **Resilient**: Built-in error handling and retry mechanisms.
+- **Node configuration**: VMess, VLESS, Trojan, Shadowsocks, Hysteria, Hysteria2, Tuic, AnyTLS.
+- **User sync**: Retrieve and cache user lists with ETag-based 304 handling.
+- **Traffic reporting**: Report user upload/download counters.
+- **Online tracking**: Report online users and fetch alive counts.
+- **Resilient**: Sanitized errors, GET-only retry, response-size limits.
 
 ## Installation
 
@@ -18,7 +18,7 @@ go get github.com/GoAsyncFunc/uniproxy
 
 ## Usage
 
-### 1. Initialization
+### Initialization
 
 ```go
 package main
@@ -37,9 +37,8 @@ func main() {
 		APIHost:  "https://api.example.com",
 		Key:      "your-node-token",
 		NodeID:   1,
-		NodeType: "hysteria2", // vmess, vless, trojan, etc.
+		NodeType: "hysteria2", // vmess, vless, trojan, shadowsocks, tuic, hysteria, hysteria2, anytls
 		Timeout:  10,
-		AuthMode: pkg.AuthModeHeaderOnly, // recommended when the panel supports bearer auth
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -50,29 +49,53 @@ func main() {
 }
 ```
 
-`pkg.New` remains available for compatibility when the configuration has already been validated, but `pkg.NewWithError` is recommended for new code.
+`pkg.New` is retained for compatibility but logs a warning and returns `nil`
+on invalid config. Prefer `pkg.NewWithError` in new code.
 
-Configuration validation requires `APIHost` to use `http` or `https` with a host, rejects URL userinfo/query/fragment/path components, requires `Key`, requires `NodeID > 0`, and accepts these node types: `vmess`, `vless`, `shadowsocks`, `trojan`, `tuic`, `hysteria`, `hysteria2`, and `anytls`. The legacy `v2ray` node type is accepted as a compatibility alias for `vmess`.
+### Config validation
 
-`APIHost` should come from trusted configuration, not direct user input. Remote HTTP hosts are rejected by default; `http://localhost` and loopback IPs are allowed for local development. This validation is transport hardening, not complete SSRF protection; applications that accept user-controlled hosts must enforce their own hostname/IP allowlist. Prefer HTTPS in production because v1 retains query-token compatibility.
+`validateConfig` requires:
 
-By default, v1 sends the node token in both places: the legacy `token` query parameter required by existing UniProxy panels and an `Authorization: Bearer <token>` header for deployments that can read header-based auth. Set `AuthModeHeaderOnly` for new deployments whose panels support bearer auth; use `AuthModeQueryOnly` only for legacy panels. Query-token modes can expose credentials through infrastructure URL logs, so prefer HTTPS and header-only auth when possible.
+- `APIHost`: `http`/`https` scheme with a host, no userinfo/path/query/fragment.
+  Plain `http` is rejected unless the host is `localhost` or a loopback IP.
+- `Key`: non-empty.
+- `NodeID`: positive.
+- `NodeType`: one of `vmess`, `vless`, `shadowsocks`, `trojan`, `tuic`,
+  `hysteria`, `hysteria2`, `anytls`. The legacy `v2ray` value is normalized
+  to `vmess`.
+- `APISendIP` (optional): valid IPv4/IPv6.
 
-The deprecated public `Client.APIHost`, `Client.APISendIP`, `Client.Token`, `Client.NodeType`, and `Client.NodeId` fields are informational compatibility fields; mutating them does not change request behavior. `Config.Debug` and `Client.Debug(true)` are disabled/deprecated because request debugging can expose credentials. Use sanitized application-level logging instead.
+The host check is transport hardening, not full SSRF protection. Applications
+that accept user-controlled hosts must enforce their own allowlist.
 
-Avoid logging full `Config`, `Client`, or `NodeInfo` values because they can include tokens, private keys, or server keys. Common `Client`, `APIError`, and sensitive model formatters redact known sensitive fields, but callers should still avoid logging full remote panel payloads.
+### Authentication
 
-Public methods validate caller and panel data before sending or returning it: `ReportUserTraffic` rejects non-positive or duplicate UIDs and negative counters; `ReportNodeOnlineUsers` rejects nil data, non-positive UIDs, empty IP lists, and invalid `netip.Addr` entries — the library prefixes each IP with the configured `NodeID` before posting; `GetAliveList` rejects malformed alive responses. Caller-input validation errors may be plain errors rather than `APIError`.
+The node token is sent as the `token=` query parameter on every request, which
+matches existing UniProxy panels. URLs can appear in proxy/CDN access logs, so
+**always use HTTPS in production**.
 
-### Production Security Checklist
+### Logging and debugging
 
-- Prefer `AuthModeHeaderOnly` when your panel supports bearer authentication; use query-token modes only for legacy compatibility.
-- Treat `APIHost` as operator-controlled configuration. If any user input can influence the host, enforce a hostname/IP/CIDR allowlist before constructing `Config`.
-- Use HTTPS in production and avoid following redirects to untrusted hosts when query-token modes are enabled, because URLs can appear in infrastructure logs and diagnostics.
-- Log `APIError.Error()` or your own sanitized summary instead of raw `APIError` fields, full `Config`, full `Client`, or full panel payload models.
-- Keep `Config.Debug` and `Client.Debug(true)` disabled in production; request debugging can expose authentication credentials.
+- Treat `Config`, `Client`, and `NodeInfo` as secret — they contain tokens,
+  private keys, or server keys. The library's `Stringer`/`GoStringer`
+  implementations on `Client`, `APIError`, and sensitive models redact known
+  fields, but full panel payloads should not be logged.
+- `Config.Debug` and `Client.Debug(true)` are no-ops that emit a warning;
+  request-level debug logging is disabled because it can leak credentials.
+- The deprecated public fields `Client.APIHost`, `Client.APISendIP`,
+  `Client.Token`, `Client.NodeType`, and `Client.NodeId` are informational.
+  Mutating them does not change request behavior.
 
-### 2. Fetch Node Config
+### Production checklist
+
+- Use HTTPS for `APIHost`.
+- Treat `APIHost` as operator-controlled config; allowlist hosts when user
+  input can influence them.
+- Log `APIError.Error()` (which redacts URLs and bodies) instead of raw
+  `APIError` fields, full `Config`, full `Client`, or full panel payloads.
+- Keep `Config.Debug` disabled in production.
+
+### Fetch node config
 
 ```go
 config, err := client.GetNodeInfo(ctx)
@@ -86,7 +109,9 @@ if config != nil {
 }
 ```
 
-### 3. Sync Users
+`GetNodeInfo` returns `(nil, nil)` on `304 Not Modified`.
+
+### Sync users
 
 ```go
 users, err := client.GetUserList(ctx)
@@ -95,13 +120,15 @@ if err != nil {
 }
 log.Printf("Synced %d users", len(users))
 
-cachedUsers := client.CachedUserList() // returns a copy
-log.Printf("Cached %d users", len(cachedUsers))
+cached := client.CachedUserList()
+log.Printf("Cached %d users", len(cached))
 ```
 
-`GetUserList` returns a copy of cached users, so callers can mutate the returned slice without changing the client's internal cache.
+`GetUserList` returns a fresh copy on 200 and a cached copy on 304. Both
+`GetUserList` and `CachedUserList` return copies, so mutating the slice does
+not affect internal state.
 
-### 4. Report Traffic
+### Report traffic
 
 ```go
 err := client.ReportUserTraffic(ctx, []pkg.UserTraffic{
@@ -112,7 +139,10 @@ if err != nil {
 }
 ```
 
-### 5. Report Online Users and Fetch Alive Counts
+`ReportUserTraffic` rejects non-positive UIDs, duplicate UIDs, and negative
+counters. Empty input is a no-op.
+
+### Report online users and fetch alive counts
 
 ```go
 err := client.ReportNodeOnlineUsers(ctx, map[int][]netip.Addr{
@@ -128,6 +158,26 @@ if err != nil {
 }
 log.Printf("Alive counts: %+v", alive)
 ```
+
+`ReportNodeOnlineUsers`:
+
+- Empty/nil input is a no-op (the v2board alive endpoint returns 500 on
+  empty payloads with strict cache drivers).
+- Rejects non-positive UIDs, empty IP lists, and invalid `netip.Addr` values.
+- Each IP is tagged as `<ip>_<NodeID>` before posting.
+
+`GetAliveList` rejects malformed alive responses (non-positive UIDs, negative
+counts) as parse errors.
+
+### Errors and retries
+
+- Only GET requests are retried internally (2 retries, 10ms backoff).
+  `ReportUserTraffic` and `ReportNodeOnlineUsers` are not retried by the
+  client.
+- All API errors are `*pkg.APIError`. See [docs/error_handling.md](docs/error_handling.md)
+  for classification, sentinel matching, and logging guidance.
+- Caller-input validation errors (bad UIDs, invalid IPs, etc.) may be plain
+  `error` values, not `*APIError`.
 
 ## License
 
