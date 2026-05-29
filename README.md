@@ -161,8 +161,9 @@ log.Printf("Alive counts: %+v", alive)
 
 `ReportNodeOnlineUsers`:
 
-- Empty/nil input is a no-op (the v2board alive endpoint returns 500 on
-  empty payloads with strict cache drivers).
+- Empty/nil input is a no-op. Newer v2board panels accept empty alive reports;
+  skipping them also preserves compatibility with older panels that may return
+  500 on empty payloads with strict cache drivers.
 - Rejects non-positive UIDs, empty IP lists, and invalid `netip.Addr` values.
 - Each IP is tagged as `<ip>_<NodeID>` before posting.
 

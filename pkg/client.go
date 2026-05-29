@@ -500,9 +500,9 @@ func buildOnlinePayload(data map[int][]netip.Addr, nodeID int) map[int][]string 
 
 func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]netip.Addr) error {
 	if len(data) == 0 {
-		// Skip request when no online users; v2board's alive endpoint hits
-		// Cache::many([]) on empty payload and panels with strict cache drivers
-		// return HTTP 500.
+		// Skip request when no online users. Newer v2board panels accept empty
+		// alive reports, but skipping preserves compatibility with older panels
+		// whose cache drivers may fail on empty payloads.
 		return nil
 	}
 	if err := validateOnlineUsers(data); err != nil {
