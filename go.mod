@@ -2,7 +2,7 @@ module github.com/GoAsyncFunc/uniproxy
 
 go 1.25.0
 
-toolchain go1.25.10
+toolchain go1.25.11
 
 require (
 	github.com/go-resty/resty/v2 v2.17.2
