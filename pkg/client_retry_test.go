@@ -2,13 +2,114 @@ package pkg
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	resty "github.com/go-resty/resty/v2"
 )
+
+func TestShouldRetryGet(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "canceled", err: fmt.Errorf("wrapped: %w", context.Canceled)},
+		{name: "oversized body", err: fmt.Errorf("wrapped: %w", resty.ErrResponseBodyTooLarge)},
+		{name: "unknown error", err: errors.New("invalid request")},
+		{name: "invalid certificate", err: &url.Error{Op: "Get", Err: x509.UnknownAuthorityError{}}},
+		{name: "missing DNS name", err: &net.DNSError{IsNotFound: true}},
+		{name: "temporary DNS failure", err: &net.DNSError{IsTemporary: true}, want: true},
+		{name: "DNS timeout", err: &net.DNSError{IsTimeout: true}, want: true},
+		{name: "connection failure", err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, want: true},
+		{name: "client timeout", err: &url.Error{Op: "Get", Err: context.DeadlineExceeded}, want: true},
+		{name: "EOF", err: io.EOF, want: true},
+		{name: "unexpected EOF", err: fmt.Errorf("wrapped: %w", io.ErrUnexpectedEOF), want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldRetryGet(nil, test.err); got != test.want {
+				t.Fatalf("retry = %t, want %t", got, test.want)
+			}
+		})
+	}
+	if shouldRetryGet(nil, nil) {
+		t.Fatal("nil response must not retry")
+	}
+	for _, status := range []int{200, 204, 301, 304, 400, 401, 403, 404, 429, 500, 501, 502, 503, 504, 505} {
+		t.Run(fmt.Sprintf("HTTP_%d", status), func(t *testing.T) {
+			response := &resty.Response{RawResponse: &http.Response{StatusCode: status}}
+			want := status == 500 || status == 502 || status == 503 || status == 504
+			if got := shouldRetryGet(response, nil); got != want {
+				t.Fatalf("retry = %t, want %t", got, want)
+			}
+		})
+	}
+}
+
+func TestGetRetryDelayUsesExponentialJitter(t *testing.T) {
+	for attempt := 0; attempt < getRetryCount; attempt++ {
+		minimum := getRetryBackoff << attempt
+		for sample := 0; sample < 100; sample++ {
+			delay := getRetryDelay(attempt)
+			if delay < minimum || delay >= 2*minimum {
+				t.Fatalf("attempt %d delay = %s, want [%s, %s)", attempt, delay, minimum, 2*minimum)
+			}
+		}
+	}
+}
+
+func TestClient_OversizedResponseDoesNotRetry(t *testing.T) {
+	var calls atomic.Int32
+	body := strings.Repeat("x", maxResponseBodyBytes+1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(writer, body)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, "vless")
+	_, err := client.GetUserList(context.Background())
+	if !errors.Is(err, resty.ErrResponseBodyTooLarge) {
+		t.Fatalf("error = %v, want response body too large", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("requests = %d, want one request", calls.Load())
+	}
+}
+
+func TestClient_GetWithRetryCancelsDuringBackoff(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		writer.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, "vless")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client.client.OnAfterResponse(func(_ *resty.Client, _ *resty.Response) error {
+		time.AfterFunc(10*time.Millisecond, cancel)
+		return nil
+	})
+	_, err := client.GetUserList(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want canceled", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("requests = %d, want cancellation before retry", calls.Load())
+	}
+}
 
 func TestClient_GetWithRetryTreatsNilContextAsBackgroundOnRetry(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

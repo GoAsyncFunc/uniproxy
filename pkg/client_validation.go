@@ -54,6 +54,9 @@ func validateConfig(c *Config) error {
 	if strings.TrimSpace(c.Key) == "" {
 		return errors.New("api key is required")
 	}
+	if c.Timeout > 0 && int64(c.Timeout) > maxDurationSeconds {
+		return errors.New("timeout exceeds maximum duration in seconds")
+	}
 	if c.NodeID <= 0 {
 		return fmt.Errorf("node id must be positive: %d", c.NodeID)
 	}
@@ -69,6 +72,9 @@ func validateConfig(c *Config) error {
 func validateUserList(userlist *UserListBody) error {
 	if userlist == nil {
 		return errors.New("user list is nil")
+	}
+	if userlist.Users == nil {
+		return errors.New("user list must include a users array")
 	}
 	seen := make(map[int]struct{}, len(userlist.Users))
 	seenUUID := make(map[string]struct{}, len(userlist.Users))
@@ -108,6 +114,17 @@ func validateCommonNode(cm *CommonNode) error {
 	}
 	if cm.ServerPort <= 0 || cm.ServerPort > 65535 {
 		return fmt.Errorf("server_port must be between 1 and 65535: %d", cm.ServerPort)
+	}
+	if cm.BaseConfig != nil {
+		for name, value := range map[string]any{
+			"push_interval": cm.BaseConfig.PushInterval,
+			"pull_interval": cm.BaseConfig.PullInterval,
+		} {
+			// Missing/null intervals use the documented panel default.
+			if value != nil && IntervalToTime(value) <= 0 {
+				return fmt.Errorf("%s must convert to positive seconds within duration range", name)
+			}
+		}
 	}
 	return validateRoutes(cm.Routes)
 }
@@ -209,6 +226,12 @@ func validateProtocolSpecificNode(node *NodeInfo) error {
 	if node.Vless != nil {
 		return validateTLSEnum(Vless, node.Vless.Tls)
 	}
+	if node.Hysteria != nil && node.Hysteria.Version != 1 {
+		return errors.New("hysteria config must have version 1")
+	}
+	if node.Hysteria2 != nil && node.Hysteria2.Version != 2 {
+		return errors.New("hysteria2 config must have version 2")
+	}
 	if node.Hysteria != nil && (node.Hysteria.UpMbps < 0 || node.Hysteria.DownMbps < 0) {
 		return fmt.Errorf("hysteria bandwidth must be non-negative")
 	}
@@ -243,12 +266,9 @@ func validateOnlineUsers(data map[int][]netip.Addr) error {
 		if uid <= 0 {
 			return fmt.Errorf("online user uid must be positive: %d", uid)
 		}
-		if len(ips) == 0 {
-			return fmt.Errorf("online user list is empty for uid %d", uid)
-		}
 		for _, ip := range ips {
-			if !ip.IsValid() {
-				return fmt.Errorf("invalid online user ip for uid %d", uid)
+			if !ip.IsValid() || ip.Zone() != "" {
+				return fmt.Errorf("invalid or zoned online user ip for uid %d", uid)
 			}
 		}
 	}

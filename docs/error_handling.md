@@ -20,8 +20,10 @@ const (
 code to decide whether a retry is appropriate — only transient 5xx responses
 should generally be retried.
 
-The high-level methods `GetNodeInfo` and `GetUserList` handle 304 internally
-(returning `(nil, nil)` and the cached user list respectively).
+The high-level methods `GetNodeInfo` and `GetUserList` handle valid 304 responses
+internally (returning `(nil, nil)` and the cached user list respectively).
+A 304 without a previously validated response and a non-empty request ETag is
+an `ErrorTypeParseError`, not a successful empty result.
 `NewNotModifiedError` is exposed for callers building custom integrations.
 
 ## APIError shape
@@ -47,6 +49,9 @@ Sensitive query keys (`token`, `key`, `auth`, `authorization`, `access_token`,
 `id_token`, `mldsa65seed`, `secret`, `password`, `signature`, `sig`) are
 redacted in URLs. Bearer tokens and the same key set are also redacted from
 embedded JSON/query/colon-separated text in messages and wrapped errors.
+Inputs longer than 8 KiB are replaced with a fixed summary before redaction
+to bound processing and allocation costs. Redaction can expand short input;
+the resulting text is also capped at 8 KiB plus a truncation marker.
 
 ## Basic usage
 
@@ -131,32 +136,30 @@ case 500, 502, 503, 504:
 
 ## Retry strategy
 
-`uniproxy` retries GET requests internally (2 retries, 10ms backoff). POST
-reports (`ReportUserTraffic`, `ReportNodeOnlineUsers`) are **not** retried —
-the caller must decide whether retrying is safe.
+`uniproxy` retries GET requests at most twice for HTTP 500/502/503/504,
+connection failures, temporary DNS errors, timeouts, and interrupted reads.
+The first retry waits 100–200ms and the second waits 200–400ms, with random
+jitter. Oversized responses, canceled contexts, permanent DNS errors,
+certificate validation failures, and other HTTP statuses are not retried.
+Caller cancellation also interrupts backoff and node/user refresh-lock waits.
+`Config.Timeout` applies to each HTTP attempt, not the entire retry sequence.
 
-```go
-func reportWithRetry(ctx context.Context, c *pkg.Client, traffic []pkg.UserTraffic) error {
-    const maxRetries = 3
-    for i := 0; i < maxRetries; i++ {
-        err := c.ReportUserTraffic(ctx, traffic)
-        if err == nil {
-            return nil
-        }
+The referenced v2board implementation uses HTTP 500 for invalid tokens and
+missing nodes too. These responses are eligible for the bounded GET retry
+policy, but operators must fix the configuration if the error persists.
 
-        var apiErr *pkg.APIError
-        if errors.As(err, &apiErr) {
-            // Retry only transient failures.
-            if apiErr.IsNetworkError() || apiErr.StatusCode >= 500 {
-                time.Sleep(time.Second * time.Duration(i+1))
-                continue
-            }
-        }
-        return err
-    }
-    return fmt.Errorf("reached max retries")
-}
-```
+POST reports (`ReportUserTraffic`, `ReportNodeOnlineUsers`) are **not** retried.
+They require a 2xx response with `{"data":true}`, or HTTP 204 for compatibility.
+Malformed or missing acknowledgements return parse errors; `{"data":false}`
+returns a business-logic error. Redirects are rejected before following them,
+and their original HTTP status is preserved in `APIError.StatusCode`.
+
+Do not infer that an errored traffic report was never processed. The panel
+dispatches accounting jobs before acknowledging the request; a lost response
+or partial server failure can leave the result ambiguous. Retrying the same
+traffic without reconciliation or server-side idempotency can double-count
+it. An application must choose its own recovery policy rather than blindly
+replaying every network or 5xx failure.
 
 ## Sentinel matching with `errors.Is`
 

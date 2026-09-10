@@ -3,6 +3,7 @@ package pkg
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 )
 
 // VMessNode is vmess node info
@@ -61,6 +62,41 @@ type TlsSettings struct {
 	PrivateKey  string `json:"private_key"`
 	Mldsa65Seed string `json:"mldsa65Seed"`
 	Xver        uint64 `json:"xver,string"`
+}
+
+// UnmarshalJSON accepts the numeric and string forms emitted by panel editors.
+// Missing or null xver means no PROXY protocol (0).
+func (t *TlsSettings) UnmarshalJSON(data []byte) error {
+	type alias TlsSettings
+	var decoded struct {
+		alias
+		Xver json.RawMessage `json:"xver"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var xver uint64
+	if len(decoded.Xver) > 0 && string(decoded.Xver) != "null" {
+		value := decoded.Xver
+		if value[0] == '"' {
+			var text string
+			if err := json.Unmarshal(value, &text); err != nil {
+				return fmt.Errorf("invalid xver")
+			}
+			value = []byte(text)
+		}
+		var err error
+		xver, err = strconv.ParseUint(string(value), 10, 64)
+		if err != nil {
+			return fmt.Errorf("xver must be an integer between 0 and 2")
+		}
+	}
+	if xver > 2 {
+		return fmt.Errorf("xver must be an integer between 0 and 2")
+	}
+	decoded.alias.Xver = xver
+	*t = TlsSettings(decoded.alias)
+	return nil
 }
 
 func (t TlsSettings) String() string {

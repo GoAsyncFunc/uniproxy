@@ -3,11 +3,103 @@ package pkg
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 )
+
+func TestClient_ReportAcknowledgements(t *testing.T) {
+	reports := []struct {
+		name string
+		call func(*Client) error
+	}{
+		{name: "traffic", call: func(client *Client) error {
+			return client.ReportUserTraffic(context.Background(), []UserTraffic{{UID: 1, Upload: 10, Download: 20}})
+		}},
+		{name: "online", call: func(client *Client) error {
+			return client.ReportNodeOnlineUsers(context.Background(), map[int][]netip.Addr{1: {netip.MustParseAddr("203.0.113.1")}})
+		}},
+	}
+	responses := []struct {
+		name    string
+		status  int
+		body    string
+		wantErr bool
+	}{
+		{name: "panel success", status: http.StatusOK, body: `{"data":true}`},
+		{name: "legacy no content", status: http.StatusNoContent},
+		{name: "negative acknowledgement", status: http.StatusOK, body: `{"data":false}`, wantErr: true},
+		{name: "missing acknowledgement", status: http.StatusOK, body: `{}`, wantErr: true},
+		{name: "null acknowledgement", status: http.StatusOK, body: `{"data":null}`, wantErr: true},
+		{name: "string acknowledgement", status: http.StatusOK, body: `{"data":"true"}`, wantErr: true},
+		{name: "null response", status: http.StatusOK, body: `null`, wantErr: true},
+		{name: "empty response", status: http.StatusOK, wantErr: true},
+		{name: "login page", status: http.StatusOK, body: `<html>Please sign in</html>`, wantErr: true},
+		{name: "redirect without location", status: http.StatusFound, wantErr: true},
+		{name: "not modified", status: http.StatusNotModified, wantErr: true},
+		{name: "server error", status: http.StatusInternalServerError, body: `{"message":"token is error"}`, wantErr: true},
+	}
+	for _, report := range reports {
+		for _, response := range responses {
+			t.Run(report.name+"/"+response.name, func(t *testing.T) {
+				var calls atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					calls.Add(1)
+					writer.WriteHeader(response.status)
+					_, _ = writer.Write([]byte(response.body))
+				}))
+				defer server.Close()
+				err := report.call(newTestClient(t, server.URL, "vless"))
+				if (err != nil) != response.wantErr {
+					t.Fatalf("error = %v, want error = %t", err, response.wantErr)
+				}
+				if calls.Load() != 1 {
+					t.Fatalf("requests = %d, want one report attempt", calls.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestClient_RejectsRedirectsWithoutFollowing(t *testing.T) {
+	for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			t.Run(fmt.Sprintf("%s/%d", method, status), func(t *testing.T) {
+				var redirected atomic.Int32
+				var calls atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					calls.Add(1)
+					if request.URL.Path == "/login" {
+						redirected.Add(1)
+						_, _ = writer.Write([]byte(`{"data":true}`))
+						return
+					}
+					writer.Header().Set("Location", "/login")
+					writer.WriteHeader(status)
+				}))
+				defer server.Close()
+				client := newTestClient(t, server.URL, "vless")
+				var err error
+				if method == http.MethodGet {
+					_, err = client.GetUserList(context.Background())
+				} else {
+					err = client.ReportUserTraffic(context.Background(), []UserTraffic{{UID: 1, Upload: 10, Download: 20}})
+				}
+				var apiError *APIError
+				if !errors.As(err, &apiError) || apiError.StatusCode != status {
+					t.Fatalf("error = %v, want HTTP %d error", err, status)
+				}
+				if redirected.Load() != 0 || calls.Load() != 1 {
+					t.Fatalf("requests = %d, redirects = %d, want one request and no redirects", calls.Load(), redirected.Load())
+				}
+			})
+		}
+	}
+}
 
 func TestClient_ReportNodeOnlineUsers_PostsAlivePayload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -131,7 +223,7 @@ func TestClient_ReportNodeOnlineUsers_RejectsInvalidPayload(t *testing.T) {
 	}{
 		{name: "zero uid", data: map[int][]netip.Addr{0: {netip.MustParseAddr("203.0.113.1")}}},
 		{name: "negative uid", data: map[int][]netip.Addr{-1: {netip.MustParseAddr("203.0.113.1")}}},
-		{name: "empty users", data: map[int][]netip.Addr{1: {}}},
+		{name: "zoned ip", data: map[int][]netip.Addr{1: {netip.MustParseAddr("fe80::1%eth0")}}},
 		{name: "invalid ip", data: map[int][]netip.Addr{1: {netip.Addr{}}}},
 	}
 

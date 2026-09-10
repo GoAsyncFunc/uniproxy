@@ -137,8 +137,8 @@ func TestClient_GetNodeInfo_RejectsImpossibleProtocolValues(t *testing.T) {
 	}{
 		{name: "vmess invalid tls", nodeType: "vmess", body: `{"server_port":443,"tls":99}`},
 		{name: "vless invalid tls", nodeType: "vless", body: `{"server_port":443,"tls":-1}`},
-		{name: "hysteria negative up", nodeType: "hysteria", body: `{"server_port":443,"up_mbps":-1,"down_mbps":0}`},
-		{name: "hysteria2 negative down", nodeType: "hysteria2", body: `{"server_port":443,"up_mbps":0,"down_mbps":-1}`},
+		{name: "hysteria negative up", nodeType: "hysteria", body: `{"server_port":443,"version":1,"up_mbps":-1,"down_mbps":0}`},
+		{name: "hysteria2 negative down", nodeType: "hysteria2", body: `{"server_port":443,"version":2,"up_mbps":0,"down_mbps":-1}`},
 	}
 
 	for _, tt := range tests {
@@ -170,8 +170,8 @@ func TestClient_GetNodeInfo_AcceptsConservativeProtocolValues(t *testing.T) {
 		{name: "vmess none tls", nodeType: "vmess", body: `{"server_port":443,"tls":0}`},
 		{name: "vmess tls", nodeType: "vmess", body: `{"server_port":443,"tls":1}`},
 		{name: "vless reality", nodeType: "vless", body: `{"server_port":443,"tls":2}`},
-		{name: "hysteria zero bandwidth", nodeType: "hysteria", body: `{"server_port":443,"up_mbps":0,"down_mbps":0}`},
-		{name: "hysteria2 zero bandwidth", nodeType: "hysteria2", body: `{"server_port":443,"up_mbps":0,"down_mbps":0}`},
+		{name: "hysteria zero bandwidth", nodeType: "hysteria", body: `{"server_port":443,"version":1,"up_mbps":0,"down_mbps":0}`},
+		{name: "hysteria2 zero bandwidth", nodeType: "hysteria2", body: `{"server_port":443,"version":2,"up_mbps":0,"down_mbps":0}`},
 	}
 
 	for _, tt := range tests {
@@ -218,7 +218,7 @@ func TestClient_GetNodeInfo_ParseErrorDoesNotCommitCache(t *testing.T) {
 	}
 }
 
-func TestClient_GetNodeInfo_KeepsETagWhenMissing(t *testing.T) {
+func TestClient_GetNodeInfo_ClearsETagWhenMissing(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
@@ -226,8 +226,8 @@ func TestClient_GetNodeInfo_KeepsETagWhenMissing(t *testing.T) {
 		case 1:
 			w.Header().Set(headerETag, "etag-1")
 		case 3:
-			if got := r.Header.Get(headerIfNoneMatch); got != "etag-1" {
-				t.Fatalf("If-None-Match = %q, want etag-1", got)
+			if got := r.Header.Get(headerIfNoneMatch); got != "" {
+				t.Errorf("If-None-Match = %q, want empty", got)
 			}
 		}
 		_, _ = w.Write([]byte(`{"server_port": 1234, "server_name": "test"}`))

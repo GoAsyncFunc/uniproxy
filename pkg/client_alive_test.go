@@ -93,8 +93,6 @@ func TestClient_GetAliveList_Empty(t *testing.T) {
 		body string
 	}{
 		{name: "empty object", body: `{"alive": {}}`},
-		{name: "missing alive", body: `{}`},
-		{name: "null alive", body: `{"alive": null}`},
 	}
 
 	for _, tt := range tests {
@@ -131,6 +129,13 @@ func TestClient_GetAliveList_RejectsInvalidValues(t *testing.T) {
 		name string
 		body string
 	}{
+		{name: "missing alive", body: `{}`},
+		{name: "null alive", body: `{"alive": null}`},
+		{name: "null response", body: `null`},
+		{name: "error object", body: `{"error":"failed"}`},
+		{name: "array", body: `{"alive":[]}`},
+		{name: "null count", body: `{"alive":{"1":null}}`},
+		{name: "zero uid", body: `{"alive":{"0":1}}`},
 		{name: "negative uid", body: `{"alive": {"-1": 1}}`},
 		{name: "negative count", body: `{"alive": {"1": -1}}`},
 	}

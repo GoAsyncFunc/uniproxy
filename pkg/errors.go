@@ -26,7 +26,10 @@ const (
 	ErrorTypeUnknown      ErrorType = "Unknown"      // Unknown Error
 )
 
-const maxAPIErrorMessageBytes = 8 * 1024
+const (
+	maxAPIErrorMessageBytes  = 8 * 1024
+	oversizedAPIErrorMessage = "response error message omitted: exceeds 8192 bytes"
+)
 
 var (
 	embeddedBearerQueryPattern             = regexp.MustCompile(`(?i)((?:auth|authorization)\s*=\s*Bearer\s+)[^&\s"']+`)
@@ -80,7 +83,7 @@ func sanitizeError(err error) error {
 	if err == nil {
 		return nil
 	}
-	return errors.New(redactEmbeddedSecrets(err.Error()))
+	return errors.New(sanitizeAPIErrorMessage(err.Error()))
 }
 
 type sanitizedWrappedError struct {
@@ -112,7 +115,7 @@ func sanitizeWrappedError(err error) error {
 		return nil
 	}
 	return sanitizedWrappedError{
-		message:                redactEmbeddedSecrets(err.Error()),
+		message:                sanitizeAPIErrorMessage(err.Error()),
 		isContextCanceled:      errors.Is(err, context.Canceled),
 		isDeadlineExceeded:     errors.Is(err, context.DeadlineExceeded),
 		isResponseBodyTooLarge: errors.Is(err, resty.ErrResponseBodyTooLarge),
@@ -120,6 +123,9 @@ func sanitizeWrappedError(err error) error {
 }
 
 func sanitizeAPIErrorMessage(message string) string {
+	if len(message) > maxAPIErrorMessageBytes {
+		return oversizedAPIErrorMessage
+	}
 	message = redactEmbeddedSecrets(message)
 	if len(message) <= maxAPIErrorMessageBytes {
 		return message

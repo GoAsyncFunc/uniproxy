@@ -189,7 +189,7 @@ func TestRedactEmbeddedSecretsCoversDirectFormats(t *testing.T) {
 	}
 }
 
-func TestSanitizeAPIErrorMessageRedactsAndTruncates(t *testing.T) {
+func TestSanitizeAPIErrorMessageOmitsOversizedInput(t *testing.T) {
 	secret := "secret-token"
 	message := "token=" + secret + "&" + strings.Repeat("a", maxAPIErrorMessageBytes+100)
 
@@ -197,11 +197,25 @@ func TestSanitizeAPIErrorMessageRedactsAndTruncates(t *testing.T) {
 	if strings.Contains(got, secret) {
 		t.Fatalf("message leaked secret in %q", got)
 	}
-	if !strings.Contains(got, "token=REDACTED") {
-		t.Fatalf("message = %q, want redacted token", got)
+	if got != oversizedAPIErrorMessage {
+		t.Fatalf("message = %q, want fixed oversized summary", got)
 	}
-	if !strings.Contains(got, "[truncated]") {
-		t.Fatalf("message = %q, want truncation marker", got)
+}
+
+func TestSanitizedErrorsOmitOversizedInput(t *testing.T) {
+	original := errors.New(strings.Repeat("token=secret-token&", maxAPIErrorMessageBytes))
+	for _, sanitized := range []error{sanitizeError(original), sanitizeWrappedError(original)} {
+		if sanitized.Error() != oversizedAPIErrorMessage {
+			t.Fatalf("error length = %d, want fixed oversized summary", len(sanitized.Error()))
+		}
+	}
+}
+
+func TestSanitizeAPIErrorMessageCapsExpandedRedactions(t *testing.T) {
+	message := strings.Repeat("token=x&", maxAPIErrorMessageBytes/8)
+	got := sanitizeAPIErrorMessage(message)
+	if len(got) > maxAPIErrorMessageBytes+len("... [truncated]") || !strings.HasSuffix(got, "... [truncated]") {
+		t.Fatalf("message length = %d, want truncated redactions", len(got))
 	}
 }
 

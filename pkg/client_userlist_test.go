@@ -105,6 +105,69 @@ func TestClient_GetUserList_RejectsInvalidUsers(t *testing.T) {
 	}
 }
 
+func TestClient_GetUserList_InvalidEnvelopePreservesCache(t *testing.T) {
+	for _, body := range []string{`{}`, `null`, `{"message":"temporary failure"}`, `{"users":null}`, `{"users":{}}`} {
+		t.Run(body, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				calls++
+				if calls == 1 {
+					writer.Header().Set(headerETag, "good-etag")
+					_, _ = writer.Write([]byte(`{"users":[{"id":1,"uuid":"550e8400-e29b-41d4-a716-446655440000"}]}`))
+					return
+				}
+				writer.Header().Set(headerETag, "bad-etag")
+				_, _ = writer.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			client := newTestClient(t, server.URL, "vless")
+			if _, err := client.GetUserList(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			originalHash := client.userBodyHash
+			_, err := client.GetUserList(context.Background())
+			var apiError *APIError
+			if !errors.As(err, &apiError) || !apiError.IsParseError() {
+				t.Fatalf("error = %v, want parse error", err)
+			}
+			cached := client.CachedUserList()
+			if len(cached) != 1 || cached[0].Id != 1 {
+				t.Fatalf("cached users = %v, want original user", cached)
+			}
+			if client.userEtag != "good-etag" || client.userBodyHash != originalHash {
+				t.Fatal("invalid response changed cache validators")
+			}
+		})
+	}
+}
+
+func TestClient_GetUserList_EmptyArrayClearsCache(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		if calls == 1 {
+			_, _ = writer.Write([]byte(`{"users":[{"id":1,"uuid":"550e8400-e29b-41d4-a716-446655440000"}]}`))
+			return
+		}
+		writer.Header().Set(headerETag, "empty-etag")
+		_, _ = writer.Write([]byte(`{"users":[]}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, "vless")
+	if _, err := client.GetUserList(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	users, err := client.GetUserList(context.Background())
+	if err != nil || len(users) != 0 || len(client.CachedUserList()) != 0 {
+		t.Fatalf("users = %v, error = %v, want empty list", users, err)
+	}
+	if client.userEtag != "empty-etag" {
+		t.Fatalf("etag = %q, want empty-etag", client.userEtag)
+	}
+}
+
 func TestClient_GetUserList_ReturnsCopyOnFreshAndCachedResponses(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +239,7 @@ func TestClient_GetUserList_BodyHashDedupRefreshesETag(t *testing.T) {
 	}
 }
 
-func TestClient_GetUserList_BodyHashDedupKeepsETagWhenMissing(t *testing.T) {
+func TestClient_GetUserList_BodyHashDedupClearsETagWhenMissing(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
@@ -184,8 +247,8 @@ func TestClient_GetUserList_BodyHashDedupKeepsETagWhenMissing(t *testing.T) {
 		case 1:
 			w.Header().Set(headerETag, "etag-1")
 		case 3:
-			if got := r.Header.Get(headerIfNoneMatch); got != "etag-1" {
-				t.Fatalf("If-None-Match = %q, want etag-1", got)
+			if got := r.Header.Get(headerIfNoneMatch); got != "" {
+				t.Errorf("If-None-Match = %q, want empty", got)
 			}
 		}
 		_, _ = w.Write([]byte(`{"users": [{"id": 1, "uuid": "550e8400-e29b-41d4-a716-446655440000"}]}`))
@@ -258,7 +321,7 @@ func TestClient_GetUserList_ParseErrorDoesNotCommitCache(t *testing.T) {
 	}
 }
 
-func TestClient_GetUserList_304WithoutCacheReturnsNil(t *testing.T) {
+func TestClient_GetUserList_304WithoutCacheReturnsError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotModified)
 	}))
@@ -266,8 +329,8 @@ func TestClient_GetUserList_304WithoutCacheReturnsNil(t *testing.T) {
 
 	client := newTestClient(t, server.URL, "vless")
 	users, err := client.GetUserList(context.Background())
-	if err != nil {
-		t.Fatalf("GetUserList failed: %v", err)
+	if err == nil {
+		t.Fatal("expected error for unsolicited 304")
 	}
 	if users != nil {
 		t.Fatalf("users = %#v, want nil", users)

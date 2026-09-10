@@ -2,6 +2,7 @@ package pkg
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -53,20 +54,26 @@ func (u UserListBody) GoString() string {
 	return u.String()
 }
 
+// UserTraffic contains incremental bytes, not lifetime counters. The panel
+// applies its traffic multiplier. Replaying a report can duplicate accounting.
 type UserTraffic struct {
 	UID      int
-	Upload   int64
-	Download int64
+	Upload   int64 // User upload: client to proxy.
+	Download int64 // User download: proxy to client.
 }
 
+const maxDurationSeconds = int64(math.MaxInt64) / int64(time.Second)
+
 func intervalSeconds(value int) time.Duration {
-	if value <= 0 {
+	if value <= 0 || int64(value) > maxDurationSeconds {
 		return 0
 	}
 	return time.Duration(value) * time.Second
 }
 
-// Helper function to convert dynamic interval types to time.Duration
+// IntervalToTime converts seconds, truncating fractional floats for compatibility.
+// Invalid, non-positive, or overflowing values return 0; do not pass that result
+// directly to a ticker. Node configs are validated separately before conversion.
 func IntervalToTime(i interface{}) time.Duration {
 	switch v := i.(type) {
 	case int:
@@ -79,6 +86,9 @@ func IntervalToTime(i interface{}) time.Duration {
 		}
 		return intervalSeconds(val)
 	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v > float64(maxDurationSeconds) || v >= float64(math.MaxInt) {
+			return 0
+		}
 		return intervalSeconds(int(v))
 	}
 	return 0

@@ -24,7 +24,7 @@ func TestClient_CheckResponseNilResponseReturnsNetworkError(t *testing.T) {
 	}
 }
 
-func TestClient_CheckResponseRedactsAndTruncatesErrorBody(t *testing.T) {
+func TestClient_CheckResponseOmitsOversizedErrorBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("token=secret-token&node_id=1\n" + strings.Repeat("x", 12*1024)))
@@ -41,8 +41,8 @@ func TestClient_CheckResponseRedactsAndTruncatesErrorBody(t *testing.T) {
 	if strings.Contains(got, "secret-token") {
 		t.Fatalf("error leaked token: %q", got)
 	}
-	if !strings.Contains(got, "token=REDACTED") {
-		t.Fatalf("error = %q, want redacted token marker", got)
+	if !strings.Contains(got, oversizedAPIErrorMessage) {
+		t.Fatalf("error = %q, want fixed oversized summary", got)
 	}
 	if len(got) > 9*1024 {
 		t.Fatalf("error length = %d, want truncated error", len(got))

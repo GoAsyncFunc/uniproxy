@@ -138,10 +138,16 @@ func (node *NodeInfo) ProcessCommonNode(cm *CommonNode) {
 		}
 	}
 
-	// set interval
+	// Match the panel defaults when base_config or an interval is missing/null.
+	node.PushInterval = 60 * time.Second
+	node.PullInterval = 60 * time.Second
 	if cm.BaseConfig != nil {
-		node.PushInterval = IntervalToTime(cm.BaseConfig.PushInterval)
-		node.PullInterval = IntervalToTime(cm.BaseConfig.PullInterval)
+		if cm.BaseConfig.PushInterval != nil {
+			node.PushInterval = IntervalToTime(cm.BaseConfig.PushInterval)
+		}
+		if cm.BaseConfig.PullInterval != nil {
+			node.PullInterval = IntervalToTime(cm.BaseConfig.PullInterval)
+		}
 	}
 
 	node.Common = cm

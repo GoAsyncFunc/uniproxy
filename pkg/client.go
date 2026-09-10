@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/netip"
@@ -40,7 +42,7 @@ const (
 	headerETag           = "ETag"
 	contentTypeJSON      = "application/json"
 	getRetryCount        = 2
-	getRetryBackoff      = 10 * time.Millisecond
+	getRetryBackoff      = 100 * time.Millisecond
 	maxResponseBodyBytes = 8 * 1024 * 1024
 )
 
@@ -94,8 +96,8 @@ type Client struct {
 
 	nodeMu           sync.Mutex
 	userMu           sync.Mutex
-	nodeRefreshMu    sync.Mutex
-	userRefreshMu    sync.Mutex
+	nodeRefresh      chan struct{}
+	userRefresh      chan struct{}
 	nodeEtag         string
 	userEtag         string
 	responseBodyHash string
@@ -156,6 +158,9 @@ func New(c *Config) *Client {
 	}
 
 	client.SetRetryCount(0)
+	client.SetRedirectPolicy(resty.RedirectPolicyFunc(func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}))
 	client.SetResponseBodyLimit(maxResponseBodyBytes)
 	if c.Timeout > 0 {
 		client.SetTimeout(time.Duration(c.Timeout) * time.Second)
@@ -195,12 +200,14 @@ func New(c *Config) *Client {
 			nodeType:  nodeType,
 			nodeID:    c.NodeID,
 		},
-		Token:     "REDACTED",
-		APIHost:   c.APIHost,
-		APISendIP: c.APISendIP,
-		NodeType:  nodeType,
-		NodeId:    c.NodeID,
-		userList:  &UserListBody{},
+		Token:       "REDACTED",
+		APIHost:     c.APIHost,
+		APISendIP:   c.APISendIP,
+		NodeType:    nodeType,
+		NodeId:      c.NodeID,
+		userList:    &UserListBody{},
+		nodeRefresh: make(chan struct{}, 1),
+		userRefresh: make(chan struct{}, 1),
 		handlers: map[string]NodeHandler{
 			Shadowsocks: &ShadowsocksHandler{},
 			Vmess:       &VMessHandler{},
@@ -225,11 +232,12 @@ func (c *Client) Debug(enable bool) {
 // CachedUserList returns a copy of the cached users.
 func (c *Client) CachedUserList() []UserInfo {
 	c.userMu.Lock()
-	defer c.userMu.Unlock()
-	if c.userList == nil {
-		return nil
+	var users []UserInfo
+	if c.userList != nil {
+		users = c.userList.Users
 	}
-	return cloneUserInfos(c.userList.Users)
+	c.userMu.Unlock()
+	return cloneUserInfos(users)
 }
 
 func newRequestError(path string, err error) *APIError {
@@ -246,10 +254,12 @@ func (c *Client) checkResponse(r *resty.Response, path string, err error) error 
 	if r == nil {
 		return NewNetworkError(fmt.Sprintf("request %s returned nil response", path), path, errors.New("nil response"))
 	}
-	if r.StatusCode() >= 400 {
-		message := "response body too large"
-		if len(r.Body()) <= maxResponseBodyBytes {
-			message = sanitizeAPIErrorMessage(string(r.Body()))
+	if r.StatusCode() < http.StatusOK || r.StatusCode() >= http.StatusMultipleChoices {
+		message := "unexpected HTTP response status"
+		if len(r.Body()) > maxAPIErrorMessageBytes {
+			message = oversizedAPIErrorMessage
+		} else if len(r.Body()) > 0 {
+			message = string(r.Body())
 		}
 		return NewAPIErrorFromStatusCode(
 			r.StatusCode(),
@@ -261,6 +271,28 @@ func (c *Client) checkResponse(r *resty.Response, path string, err error) error 
 	return nil
 }
 
+func (c *Client) checkReportResponse(r *resty.Response, path string, err error) error {
+	if err := c.checkResponse(r, path, err); err != nil {
+		return err
+	}
+	if r.StatusCode() == http.StatusNoContent {
+		return nil
+	}
+	var response struct {
+		Data *bool `json:"data"`
+	}
+	if err := json.Unmarshal(r.Body(), &response); err != nil {
+		return NewParseError("decode report acknowledgement error", err)
+	}
+	if response.Data == nil {
+		return NewParseError("report response must include a boolean data acknowledgement", nil)
+	}
+	if !*response.Data {
+		return NewBusinessLogicError("report was not acknowledged", path)
+	}
+	return nil
+}
+
 func checkResponseBodySize(path string, body []byte) error {
 	if len(body) <= maxResponseBodyBytes {
 		return nil
@@ -268,10 +300,9 @@ func checkResponseBodySize(path string, body []byte) error {
 	return NewParseError("response body too large", fmt.Errorf("%s response body is %d bytes, limit is %d", path, len(body), maxResponseBodyBytes))
 }
 
+// refreshETag replaces the validator when a full response is accepted.
 func refreshETag(current *string, newETag string) {
-	if newETag != "" {
-		*current = newETag
-	}
+	*current = newETag
 }
 
 func cloneUserInfos(users []UserInfo) []UserInfo {
@@ -286,6 +317,18 @@ func normalizeContext(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+func acquireRefresh(ctx context.Context, refresh chan struct{}) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case refresh <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *Client) newRequest(ctx context.Context) *resty.Request {
@@ -304,17 +347,19 @@ func (c *Client) getWithRetry(ctx context.Context, path string, configure func(*
 			configure(req)
 		}
 		r, err = req.Get(path)
-		if err == nil && r != nil && r.StatusCode() < 500 {
-			return r, nil
-		}
 		if ctx.Err() != nil {
 			return r, ctx.Err()
 		}
+		if !shouldRetryGet(r, err) {
+			break
+		}
 		if attempt < getRetryCount {
+			timer := time.NewTimer(getRetryDelay(attempt))
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return r, ctx.Err()
-			case <-time.After(getRetryBackoff):
+			case <-timer.C:
 			}
 		}
 	}
@@ -324,9 +369,47 @@ func (c *Client) getWithRetry(ctx context.Context, path string, configure func(*
 	return r, err
 }
 
+func shouldRetryGet(response *resty.Response, err error) bool {
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, resty.ErrResponseBodyTooLarge) {
+			return false
+		}
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return true
+		}
+		var dnsError *net.DNSError
+		if errors.As(err, &dnsError) {
+			return dnsError.IsTimeout || dnsError.IsTemporary
+		}
+		var operationError *net.OpError
+		if errors.As(err, &operationError) {
+			return true
+		}
+		var networkError net.Error
+		return errors.As(err, &networkError) && networkError.Timeout()
+	}
+	if response == nil {
+		return false
+	}
+	switch response.StatusCode() {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func getRetryDelay(attempt int) time.Duration {
+	delay := getRetryBackoff << attempt
+	return delay + time.Duration(rand.Int64N(int64(delay)))
+}
+
 func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
-	c.nodeRefreshMu.Lock()
-	defer c.nodeRefreshMu.Unlock()
+	ctx = normalizeContext(ctx)
+	if err := acquireRefresh(ctx, c.nodeRefresh); err != nil {
+		return nil, newRequestError(apiConfigPath, err)
+	}
+	defer func() { <-c.nodeRefresh }()
 
 	c.nodeMu.Lock()
 	nodeEtag := c.nodeEtag
@@ -340,7 +423,15 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 		return nil, newRequestError(apiConfigPath, err)
 	}
 
-	if r.StatusCode() == 304 {
+	if r.StatusCode() == http.StatusNotModified {
+		c.nodeMu.Lock()
+		defer c.nodeMu.Unlock()
+		if c.responseBodyHash == "" || nodeEtag == "" {
+			return nil, NewParseError("received 304 without a validated node cache", nil)
+		}
+		if etag := r.Header().Get(headerETag); etag != "" {
+			c.nodeEtag = etag
+		}
 		return nil, nil
 	}
 
@@ -405,15 +496,14 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 
 // GetUserList will pull user from v2board
 func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
-	c.userRefreshMu.Lock()
-	defer c.userRefreshMu.Unlock()
+	ctx = normalizeContext(ctx)
+	if err := acquireRefresh(ctx, c.userRefresh); err != nil {
+		return nil, newRequestError(apiUserPath, err)
+	}
+	defer func() { <-c.userRefresh }()
 
 	c.userMu.Lock()
 	userEtag := c.userEtag
-	cachedUsers := []UserInfo(nil)
-	if c.userList != nil {
-		cachedUsers = cloneUserInfos(c.userList.Users)
-	}
 	c.userMu.Unlock()
 
 	r, err := c.getWithRetry(ctx, apiUserPath, func(req *resty.Request) {
@@ -424,8 +514,16 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 		return nil, newRequestError(apiUserPath, err)
 	}
 
-	if r.StatusCode() == 304 {
-		return cachedUsers, nil
+	if r.StatusCode() == http.StatusNotModified {
+		c.userMu.Lock()
+		defer c.userMu.Unlock()
+		if c.userBodyHash == "" || userEtag == "" {
+			return nil, NewParseError("received 304 without a validated user cache", nil)
+		}
+		if etag := r.Header().Get(headerETag); etag != "" {
+			c.userEtag = etag
+		}
+		return cloneUserInfos(c.userList.Users), nil
 	}
 
 	if err = c.checkResponse(r, apiUserPath, nil); err != nil {
@@ -442,12 +540,12 @@ func (c *Client) GetUserList(ctx context.Context) ([]UserInfo, error) {
 	c.userMu.Lock()
 	if c.userBodyHash == newHash {
 		refreshETag(&c.userEtag, newEtag)
-		cachedUsers = nil
+		var cachedUsers []UserInfo
 		if c.userList != nil {
-			cachedUsers = cloneUserInfos(c.userList.Users)
+			cachedUsers = c.userList.Users
 		}
 		c.userMu.Unlock()
-		return cachedUsers, nil
+		return cloneUserInfos(cachedUsers), nil
 	}
 	c.userMu.Unlock()
 
@@ -483,14 +581,20 @@ func (c *Client) ReportUserTraffic(ctx context.Context, userTraffic []UserTraffi
 		SetBody(data).
 		Post(apiPushPath)
 
-	return c.checkResponse(r, apiPushPath, err)
+	return c.checkReportResponse(r, apiPushPath, err)
 }
 
 func buildOnlinePayload(data map[int][]netip.Addr, nodeID int) map[int][]string {
 	out := make(map[int][]string, len(data))
 	for uid, ips := range data {
 		list := make([]string, 0, len(ips))
+		seen := make(map[netip.Addr]struct{}, len(ips))
 		for _, ip := range ips {
+			ip = ip.Unmap()
+			if _, exists := seen[ip]; exists {
+				continue
+			}
+			seen[ip] = struct{}{}
 			list = append(list, fmt.Sprintf("%s_%d", ip.String(), nodeID))
 		}
 		out[uid] = list
@@ -512,7 +616,7 @@ func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]netip
 		SetBody(buildOnlinePayload(data, c.config.nodeID)).
 		Post(apiAlivePath)
 
-	return c.checkResponse(r, apiAlivePath, err)
+	return c.checkReportResponse(r, apiAlivePath, err)
 }
 
 func (c *Client) GetAliveList(ctx context.Context) (map[int]int, error) {
@@ -530,23 +634,25 @@ func (c *Client) GetAliveList(ctx context.Context) (map[int]int, error) {
 	}
 
 	var resp struct {
-		Alive map[int]int `json:"alive"`
+		Alive map[int]*int `json:"alive"`
 	}
 	if err := json.Unmarshal(r.Body(), &resp); err != nil {
 		return nil, NewParseError("decode alive list error", err)
 	}
 
 	if resp.Alive == nil {
-		return map[int]int{}, nil
+		return nil, NewParseError("alive response must include a non-null alive object", nil)
 	}
+	alive := make(map[int]int, len(resp.Alive))
 	for uid, count := range resp.Alive {
 		if uid <= 0 {
 			return nil, NewParseError("decode alive list error", fmt.Errorf("alive uid must be positive: %d", uid))
 		}
-		if count < 0 {
-			return nil, NewParseError("decode alive list error", fmt.Errorf("alive count must be non-negative for uid %d", uid))
+		if count == nil || *count < 0 {
+			return nil, NewParseError("decode alive list error", fmt.Errorf("alive count must be a non-negative integer for uid %d", uid))
 		}
+		alive[uid] = *count
 	}
 
-	return resp.Alive, nil
+	return alive, nil
 }
