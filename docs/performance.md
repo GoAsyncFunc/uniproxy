@@ -127,6 +127,39 @@ go test ./pkg -run '^$' -fuzz '^FuzzValidUserUUIDMatchesOriginal$' \
   -fuzztime=30s -parallel=4
 ```
 
+## Error redaction delimiter guards (after v0.1.2)
+
+The next experiment keeps all existing regexps and their replacement order.
+Every pattern requires a literal `:` or `=`; the URL-userinfo pattern also
+requires `@`. Missing delimiters allow the corresponding scans to be skipped.
+No sensitive-keyword heuristic is used, preserving Unicode case-folding behavior
+such as `Key` and `ſecret`. Replacements cannot introduce a previously absent
+colon or equals sign, so initial delimiter checks remain safe across the chain.
+
+A test-only copy of the old unguarded sequence serves as the differential oracle.
+A 30-second fuzz run completed 54,020 executions without an output mismatch,
+including comparison of post-redaction truncation. Existing secret-redaction
+and error-formatting regression tests also pass. This is equivalence to the
+existing redactor, not a claim that arbitrary secrets can always be identified.
+
+Three-sample same-process medians on Go 1.26.8:
+
+| Synthetic input | Original | Guarded | Guarded allocated/op |
+|---|---:|---:|---:|
+| Plain 8 KiB | 41.27 ms | 1.05 µs | 0 |
+| Query secrets 8 KiB | 48.62 ms | 13.71 ms | 146 KB |
+| Near-limit quoted colon secret | 5.05 ms | 3.26 ms | 17 KB |
+| Mixed query/colon fields | 53.96 ms | 48.39 ms | 237 KB |
+
+Host timings remain noisy; these are workload-specific microbenchmarks, not
+API latency guarantees. Plain text now performs only delimiter scans without
+regexp allocation; mixed delimiter input still requires most original work.
+
+```sh
+go test ./pkg -run '^$' -bench '^BenchmarkRedactionFastPath$' -benchmem -count=3
+go test ./pkg -run '^$' -fuzz '^FuzzRedactionFastPathEquivalent$' -fuzztime=30s
+```
+
 ## Release gate discovered during baseline work
 
 The GitHub CI run for `8214031` passed testing/lint but failed `govulncheck` with

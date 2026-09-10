@@ -134,13 +134,34 @@ func sanitizeAPIErrorMessage(message string) string {
 }
 
 func redactEmbeddedSecrets(value string) string {
-	value = embeddedURLUserinfoPattern.ReplaceAllString(value, "${1}REDACTED@")
-	value = embeddedBearerColonPattern.ReplaceAllString(value, "${1}REDACTED")
-	value = embeddedBearerQueryPattern.ReplaceAllString(value, "${1}REDACTED")
-	value = embeddedSecretDoubleQuotedColonPattern.ReplaceAllString(value, "${1}REDACTED")
-	value = embeddedSecretSingleQuotedColonPattern.ReplaceAllString(value, "${1}REDACTED")
-	value = embeddedSecretColonPattern.ReplaceAllString(value, "${1}REDACTED")
-	return embeddedSecretQueryPattern.ReplaceAllString(value, "$1=REDACTED")
+	// Every supported pattern requires a literal ':' or '='. Only skip scans
+	// when that necessary delimiter is absent; do not guess sensitive keywords
+	// (regexp case folding also accepts some non-ASCII characters).
+	hasColon := strings.Contains(value, ":")
+	hasEquals := strings.Contains(value, "=")
+	if !hasColon && !hasEquals {
+		return value
+	}
+	// Preserve replacement order. Replacements cannot introduce a previously
+	// absent delimiter: the query replacement's '=' requires an existing '='.
+	if hasColon {
+		if strings.Contains(value, "@") {
+			value = embeddedURLUserinfoPattern.ReplaceAllString(value, "${1}REDACTED@")
+		}
+		value = embeddedBearerColonPattern.ReplaceAllString(value, "${1}REDACTED")
+	}
+	if hasEquals {
+		value = embeddedBearerQueryPattern.ReplaceAllString(value, "${1}REDACTED")
+	}
+	if hasColon {
+		value = embeddedSecretDoubleQuotedColonPattern.ReplaceAllString(value, "${1}REDACTED")
+		value = embeddedSecretSingleQuotedColonPattern.ReplaceAllString(value, "${1}REDACTED")
+		value = embeddedSecretColonPattern.ReplaceAllString(value, "${1}REDACTED")
+	}
+	if hasEquals {
+		value = embeddedSecretQueryPattern.ReplaceAllString(value, "$1=REDACTED")
+	}
+	return value
 }
 
 func isSensitiveQueryKey(key string) bool {
