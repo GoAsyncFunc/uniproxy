@@ -46,16 +46,15 @@ const (
 	maxResponseBodyBytes = 8 * 1024 * 1024
 )
 
-func ipv4FirstTransport() *http.Transport {
+func newTransport(localIP string) *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		conn, err := dialer.DialContext(ctx, "tcp4", address)
-		if err == nil {
-			return conn, nil
-		}
-		return dialer.DialContext(ctx, network, address)
+	if localIP != "" {
+		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(localIP)}
 	}
+	// Use Go's native dual-stack dialing and Happy Eyeballs fallback rather
+	// than exhausting the request deadline on a sequential IPv4 attempt.
+	transport.DialContext = dialer.DialContext
 	return transport
 }
 
@@ -147,15 +146,8 @@ func New(c *Config) *Client {
 		return nil
 	}
 
-	var client *resty.Client
-	if c.APISendIP != "" {
-		client = resty.NewWithLocalAddr(&net.TCPAddr{
-			IP: net.ParseIP(c.APISendIP),
-		})
-	} else {
-		client = resty.New()
-		client.SetTransport(ipv4FirstTransport())
-	}
+	client := resty.New()
+	client.SetTransport(newTransport(c.APISendIP))
 
 	client.SetRetryCount(0)
 	client.SetRedirectPolicy(resty.RedirectPolicyFunc(func(*http.Request, []*http.Request) error {
@@ -227,6 +219,12 @@ func (c *Client) Debug(enable bool) {
 	if enable {
 		log.Warn("request debug logging is disabled because it can expose authentication credentials and tokens")
 	}
+}
+
+// CloseIdleConnections closes pooled idle connections without interrupting
+// active requests. The client remains usable and retains its cached data.
+func (c *Client) CloseIdleConnections() {
+	c.client.GetClient().CloseIdleConnections()
 }
 
 // CachedUserList returns a copy of the cached users.

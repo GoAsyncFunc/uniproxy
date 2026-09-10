@@ -70,6 +70,19 @@ on invalid config. Prefer `pkg.NewWithError` in new code.
 The host check is transport hardening, not full SSRF protection. Applications
 that accept user-controlled hosts must enforce their own allowlist.
 
+### Connections and lifecycle
+
+The client uses Go's native dual-stack dialing (Happy Eyeballs), rather than
+waiting for an IPv4-only attempt to fail before trying IPv6. `APISendIP`, when
+set, binds outgoing connections to that local address and therefore constrains
+the usable address family. The standard transport's proxy and TLS behavior is
+preserved.
+
+Call `client.CloseIdleConnections()` when retiring a client to release pooled
+idle connections. It does not interrupt active requests, clear caches, or make
+the client unusable; later requests can open new connections. Cancel the request
+contexts separately if active requests also need to stop.
+
 ### Authentication
 
 The node token is sent as the `token=` query parameter on every request, which
