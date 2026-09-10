@@ -48,8 +48,12 @@ const (
 	maxResponseBodyBytes = 8 * 1024 * 1024
 )
 
-func newTransport(localIP string) *http.Transport {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+func newTransport(localIP string) (*http.Transport, error) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || base == nil {
+		return nil, errors.New("http.DefaultTransport must be a non-nil *http.Transport")
+	}
+	transport := base.Clone()
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	if localIP != "" {
 		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(localIP)}
@@ -57,7 +61,7 @@ func newTransport(localIP string) *http.Transport {
 	// Use Go's native dual-stack dialing and Happy Eyeballs fallback rather
 	// than exhausting the request deadline on a sequential IPv4 attempt.
 	transport.DialContext = dialer.DialContext
-	return transport
+	return transport, nil
 }
 
 type redactedRestyClient struct {
@@ -139,18 +143,12 @@ func NewWithError(c *Config) (*Client, error) {
 	if err := validateConfig(c); err != nil {
 		return nil, err
 	}
-	return New(c), nil
-}
-
-// New creates an API client for the panel and returns nil when config validation fails.
-func New(c *Config) *Client {
-	if err := validateConfig(c); err != nil {
-		log.Warnf("invalid api config: %v", err)
-		return nil
+	transport, err := newTransport(c.APISendIP)
+	if err != nil {
+		return nil, err
 	}
-
 	client := resty.New()
-	client.SetTransport(newTransport(c.APISendIP))
+	client.SetTransport(transport)
 
 	client.SetRetryCount(0)
 	client.SetRedirectPolicy(resty.RedirectPolicyFunc(func(*http.Request, []*http.Request) error {
@@ -172,10 +170,7 @@ func New(c *Config) *Client {
 
 	client.SetBaseURL(c.APIHost)
 
-	nodeType, ok := normalizeNodeType(c.NodeType)
-	if !ok {
-		log.Warnf("Unknown Node type: %s", nodeType)
-	}
+	nodeType, _ := normalizeNodeType(c.NodeType)
 
 	client.SetQueryParams(map[string]string{
 		"node_type": nodeType,
@@ -214,7 +209,18 @@ func New(c *Config) *Client {
 			Hysteria:    &HysteriaHandler{},
 			Hysteria2:   &Hysteria2Handler{},
 		},
+	}, nil
+}
+
+// New creates an API client, logging a warning and returning nil on construction failure.
+// Prefer NewWithError to handle configuration and transport errors explicitly.
+func New(c *Config) *Client {
+	client, err := NewWithError(c)
+	if err != nil {
+		log.Warnf("cannot create api client: %v", err)
+		return nil
 	}
+	return client
 }
 
 // Debug is disabled because request debug logging can expose authentication credentials and tokens.

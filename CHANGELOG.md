@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Return a construction error when the global default transport is nil or not
+  `*http.Transport`, instead of panicking. The legacy `New` wrapper returns nil.
+- Use one validation/construction path for both constructors.
+- Add real HTTP observer regressions for cancellation, deadlines, response-size
+  limits, invalid JSON, unsolicited 304 and negative online acknowledgements.
+
 ## v0.1.3
 
 Changes since v0.1.2:

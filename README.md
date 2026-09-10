@@ -55,7 +55,8 @@ func main() {
 ```
 
 `pkg.New` is retained for compatibility but logs a warning and returns `nil`
-on invalid config. Prefer `pkg.NewWithError` in new code.
+on construction failure. Prefer `pkg.NewWithError` in new code to handle both
+configuration and transport initialization errors.
 
 ### Config validation
 
@@ -81,7 +82,11 @@ The client uses Go's native dual-stack dialing (Happy Eyeballs), rather than
 waiting for an IPv4-only attempt to fail before trying IPv6. `APISendIP`, when
 set, binds outgoing connections to that local address and therefore constrains
 the usable address family. The standard transport's proxy and TLS behavior is
-preserved.
+preserved. Construction clones `http.DefaultTransport`, which must be a non-nil
+`*http.Transport`. If the application replaces it with another RoundTripper
+(such as a tracing wrapper), `NewWithError` returns an error rather than panicking
+or silently bypassing that wrapper. Do not mutate global transport settings
+concurrently with client construction.
 
 Call `client.CloseIdleConnections()` when retiring a client to release pooled
 idle connections. It does not interrupt active requests, clear caches, or make
