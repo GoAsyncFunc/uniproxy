@@ -10,7 +10,7 @@ import (
 )
 
 func BenchmarkGetUserListParse(b *testing.B) {
-	for _, userCount := range []int{100, 1000, 10000} {
+	for _, userCount := range []int{100, 1000, 10000, 50000} {
 		b.Run(fmt.Sprintf("users_%d", userCount), func(b *testing.B) {
 			body := benchmarkUserListBody(userCount)
 			etag := 0
