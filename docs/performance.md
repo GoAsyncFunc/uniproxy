@@ -101,3 +101,9 @@ The diagnostic lists standard-library fixes through Go 1.25.13 and an associated
 select a supported patched Go toolchain, review dependency updates, and rerun
 all checks. Benchmark results here used local Go 1.26.3 and do not establish its
 security status. Do not suppress the scanner to obtain a green build.
+
+Follow-up: the project toolchain is now Go 1.26.8 (module minimum remains Go
+1.25), x/net is v0.56.0, and x/sys is v0.46.0. CI, fuzz and release read the
+preferred toolchain from go.mod. The local symbol/package/module vulnerability
+scan reports no vulnerabilities. The measurements above remain the historical
+Go 1.26.3 baseline and have not been relabeled as results for the new toolchain.

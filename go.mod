@@ -2,7 +2,7 @@ module github.com/GoAsyncFunc/uniproxy
 
 go 1.25.0
 
-toolchain go1.25.11
+toolchain go1.26.8
 
 require (
 	github.com/go-resty/resty/v2 v2.17.2
@@ -10,6 +10,6 @@ require (
 )
 
 require (
-	golang.org/x/net v0.53.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 )

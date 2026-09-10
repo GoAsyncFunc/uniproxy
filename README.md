@@ -16,6 +16,11 @@ A lightweight, robust Go client for the UniProxy API.
 go get github.com/GoAsyncFunc/uniproxy
 ```
 
+Development and CI use the patched Go toolchain specified in `go.mod`
+(currently Go 1.26.8). The module language minimum remains Go 1.25; consumers
+should build with a supported, security-patched Go release. A dependency's
+`toolchain` directive does not force downstream applications to upgrade.
+
 ## Usage
 
 ### Initialization
