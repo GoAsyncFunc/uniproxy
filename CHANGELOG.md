@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Harden the opt-in integration runner with bounded configuration reads,
+  opened-file permission checks and fixed error summaries; add offline safety
+  tests for GET-only behavior, credential protection and request cancellation.
+
 - Return a construction error when the global default transport is nil or not
   `*http.Transport`, instead of panicking. The legacy `New` wrapper returns nil.
 - Use one validation/construction path for both constructors.

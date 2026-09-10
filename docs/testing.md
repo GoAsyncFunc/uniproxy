@@ -55,9 +55,18 @@ UNIPROXY_INTEGRATION=1 UNIPROXY_INTEGRATION_CONFIG=/secure/path/panel.json \
 
 Only the file path is passed through the environment; tokens must not be placed
 in command arguments or committed examples. Errors deliberately omit panel
-payloads and configuration details. Library-internal sanitized logging may still
-occur. The test adds no flag for traffic/online mutation: those checks require a
+payloads and configuration details. The runner disables the client's internal
+request-error logging callback so raw transport diagnostics are not emitted.
+Configuration reads are bounded to 64 KiB (plus one detection byte) even if the
+file grows after its metadata was checked. Permissions and regular-file status
+are checked on the opened file too. This is not a sandbox against an attacker
+who can replace files in the containing directory; use a trusted private directory. The test adds no flag for traffic/online mutation: those checks require a
 separate, reviewed fixture lifecycle to avoid unsafe replays or orphan records.
+
+Offline safety regressions (`pkg/integration_safety_test.go`) cover disabled
+entry, invalid/private-file configuration, bounded reads, secret-free errors,
+exact GET-only request sequences, idle-connection cleanup, cancellation and
+deadline expiry. They use local mock servers, never panel credentials.
 
 CI runs normal tests on Linux, macOS and Windows using the toolchain in go.mod;
 Linux additionally runs race and coverage checks. No live panel secrets are
