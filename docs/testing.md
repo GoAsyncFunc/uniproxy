@@ -31,8 +31,39 @@ not simulate public-network dual-stack blackholes or every TLS failure.
 
 ## Live validation safety and remaining scope
 
-There is intentionally no automatically enabled live test or credential in this
-repository. Before any live run:
+There is no automatically enabled live test or credential in this repository.
+`TestIntegrationPanelFetch` is skipped unless explicitly enabled. It fetches
+config/users twice and alive counts once, but creates no records and sends no
+POST requests. Repeat reads do not require 304, since data may change during a
+run. It checks fetch contracts, not real proxy connectivity or exact accounting.
+
+Create a private JSON file **outside the repository** with these fields:
+
+```json
+{"APIHost":"https://test-panel.example.com","Key":"REPLACE_LOCALLY","NodeType":"vless","NodeID":1}
+```
+
+On Unix, set mode 600. On Windows, restrict the file ACL to the current account;
+the test cannot validate Windows ACLs. Then run explicitly (never use a production
+node without understanding the GET cache side effects):
+
+```sh
+chmod 600 /secure/path/panel.json
+UNIPROXY_INTEGRATION=1 UNIPROXY_INTEGRATION_CONFIG=/secure/path/panel.json \
+  go test ./pkg -run '^TestIntegrationPanelFetch$' -count=1 -v
+```
+
+Only the file path is passed through the environment; tokens must not be placed
+in command arguments or committed examples. Errors deliberately omit panel
+payloads and configuration details. Library-internal sanitized logging may still
+occur. The test adds no flag for traffic/online mutation: those checks require a
+separate, reviewed fixture lifecycle to avoid unsafe replays or orphan records.
+
+CI runs normal tests on Linux, macOS and Windows using the toolchain in go.mod;
+Linux additionally runs race and coverage checks. No live panel secrets are
+configured in CI. IPv6 tests skip explicitly when IPv6 loopback is unavailable.
+
+Before any live run:
 
 - Verify the effective database/cache configuration, not just `.env`.
 - Record the deployed controller revision and local modifications.
