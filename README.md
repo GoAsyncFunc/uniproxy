@@ -272,6 +272,13 @@ An acknowledgement confirms submission, not completion of those jobs. A lost
 response does not prove the report was rejected; blindly repeating traffic
 reports can duplicate accounting.
 
+## Validation and performance
+
+See [docs/testing.md](docs/testing.md) for offline contract tests, live-test
+safety requirements and remaining integration coverage. See
+[docs/performance.md](docs/performance.md) for reproducible benchmarks and their
+measurement limitations.
+
 ## License
 
 MIT License

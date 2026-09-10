@@ -1,0 +1,54 @@
+# Contract and integration validation
+
+## Offline tests (no panel credentials)
+
+```sh
+go test ./... -race -cover -count=1
+go test ./pkg -run 'TestPanelFixtureHTTPTransitions|TestClientTLSCertificateValidation' -race -count=10
+```
+
+`TestPanelFixtureHTTPTransitions` runs all protocol fixtures through the full
+HTTP client: VMess, VLESS, Trojan, Shadowsocks, Hysteria v1/v2, TUIC and AnyTLS.
+It asserts endpoint/auth query construction and the sequence:
+
+1. Valid full response, including protocol-specific field assertions.
+2. 304 with a replacement ETag.
+3. Invalid full response: parse error without committing hash or ETag.
+4. 304: previous validator remains usable.
+5. Valid changed config: new server port, hash and ETag are accepted.
+6. 304 for the updated config.
+
+Fixtures include synthetic payloads and sanitized VLESS panel samples. This
+checks compatibility with those samples, not every possible configuration or
+live support for all protocols.
+
+`TestClientTLSCertificateValidation` checks that an untrusted local TLS server
+is rejected with one connection attempt and no HTTP request. A separate test
+trusts only the test certificate and confirms successful HTTP operation without
+disabling certificate validation. Existing tests cover redirect rejection,
+IPv4/IPv6 loopback, local address binding and idle-connection cleanup. They do
+not simulate public-network dual-stack blackholes or every TLS failure.
+
+## Live validation safety and remaining scope
+
+There is intentionally no automatically enabled live test or credential in this
+repository. Before any live run:
+
+- Verify the effective database/cache configuration, not just `.env`.
+- Record the deployed controller revision and local modifications.
+- Use dedicated users and hidden nodes, with reminders disabled and reserved
+  example hostnames/addresses. Do not modify existing customer records.
+- Keep credentials local with restrictive file permissions. Never put tokens in
+  command arguments, fixtures, test output or repository files.
+- Remember that even user/alive GET endpoints can update panel cache state.
+- Send traffic increments only once; a lost acknowledgement is not permission to
+  replay. Verify asynchronous accounting and statistics separately.
+- Record created IDs, clean up only those records/cache fields, and restore any
+  temporary configuration. Do not flush shared Redis databases or queues.
+
+The manual development-panel run before v0.1.2 verified VLESS, Hysteria v1/v2,
+user updates, online IP normalization/clearing, and one incremental traffic
+report. It did not validate real proxy connections or all protocols. Remaining
+live targets include VMess, Trojan, Shadowsocks, TUIC, AnyTLS, HTTPS/proxy paths,
+and actual network-failure recovery. Offline tests must not be reported as
+substitutes for these live checks.
