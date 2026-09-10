@@ -30,6 +30,8 @@ type Config struct {
 	NodeType  string
 	Timeout   int // seconds
 	Debug     bool
+	// Observer is optional and captured at construction; changing it later has no effect.
+	Observer RequestObserver
 }
 
 const (
@@ -79,8 +81,9 @@ type clientConfig struct {
 
 // Client APIClient create a api client to the panel.
 type Client struct {
-	client *redactedRestyClient
-	config clientConfig
+	client   *redactedRestyClient
+	config   clientConfig
+	observer RequestObserver
 
 	// Deprecated: this field is informational; mutating it does not affect client behavior.
 	APIHost string
@@ -185,7 +188,8 @@ func New(c *Config) *Client {
 	}
 
 	return &Client{
-		client: &redactedRestyClient{Client: client},
+		client:   &redactedRestyClient{Client: client},
+		observer: c.Observer,
 		config: clientConfig{
 			apiHost:   c.APIHost,
 			apiSendIP: c.APISendIP,
@@ -344,7 +348,9 @@ func (c *Client) getWithRetry(ctx context.Context, path string, configure func(*
 		if configure != nil {
 			configure(req)
 		}
+		started := time.Now()
 		r, err = req.Get(path)
+		c.observeRequest(http.MethodGet, path, attempt+1, started, r, err)
 		if ctx.Err() != nil {
 			return r, ctx.Err()
 		}
@@ -575,11 +581,7 @@ func (c *Client) ReportUserTraffic(ctx context.Context, userTraffic []UserTraffi
 	for i := range userTraffic {
 		data[userTraffic[i].UID] = []int64{userTraffic[i].Upload, userTraffic[i].Download}
 	}
-	r, err := c.newRequest(ctx).
-		SetBody(data).
-		Post(apiPushPath)
-
-	return c.checkReportResponse(r, apiPushPath, err)
+	return c.postReport(ctx, apiPushPath, data)
 }
 
 func buildOnlinePayload(data map[int][]netip.Addr, nodeID int) map[int][]string {
@@ -610,11 +612,7 @@ func (c *Client) ReportNodeOnlineUsers(ctx context.Context, data map[int][]netip
 	if err := validateOnlineUsers(data); err != nil {
 		return err
 	}
-	r, err := c.newRequest(ctx).
-		SetBody(buildOnlinePayload(data, c.config.nodeID)).
-		Post(apiAlivePath)
-
-	return c.checkReportResponse(r, apiAlivePath, err)
+	return c.postReport(ctx, apiAlivePath, buildOnlinePayload(data, c.config.nodeID))
 }
 
 func (c *Client) GetAliveList(ctx context.Context) (map[int]int, error) {

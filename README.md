@@ -106,6 +106,38 @@ matches existing UniProxy panels. URLs can appear in proxy/CDN access logs, so
   `Client.Token`, `Client.NodeType`, and `Client.NodeId` are informational.
   Mutating them does not change request behavior.
 
+### Optional request observability
+
+Set `Config.Observer` at construction to receive metadata for each HTTP attempt:
+
+```go
+Observer: func(event pkg.RequestEvent) {
+    // Forward to a concurrency-safe, non-blocking metrics collector.
+    // Available: Method, Path, Attempt, Duration, StatusCode, Outcome.
+},
+```
+
+Events contain only the method, fixed API path, one-based attempt number,
+attempt duration, status code (0 without a response), and coarse outcome. They
+never contain hosts, query parameters, headers, user data, response bodies or
+raw errors. GET retries produce separate events; POST attempts always use 1.
+Invalid input and skipped empty reports emit no events because no request runs.
+
+The callback runs synchronously before parsing/retry decisions and may be called
+concurrently. It must return promptly and **must not call back into the same
+Client**, since refresh operations may still hold their serialization gate.
+Callback panics are discarded without logging; blocking callbacks still block
+their callers. Changing `Config.Observer` after construction has no effect.
+
+`http_success` means HTTP 2xx only: the JSON may subsequently fail validation or
+the report acknowledgement may be false. Likewise, `not_modified` describes a
+304 status, which may be rejected if no valid cache exists. Use the method's
+returned error to record logical sync/report success; do not derive successful
+accounting from transport metrics. Duration excludes refresh wait, backoff,
+parsing and callback execution. This hook does not retain last-success state
+or register a metrics backend. `deadline_exceeded` denotes errors matching
+`context.DeadlineExceeded`; other timeout errors may be `network_error`.
+
 ### Production checklist
 
 - Use HTTPS for `APIHost`.
