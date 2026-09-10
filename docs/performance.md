@@ -92,6 +92,41 @@ reported MB/s is not scanning throughput.
 - Request coalescing is a separate API/concurrency design decision; measure
   actual overlapping refresh demand before changing cancellation semantics.
 
+## UUID checker experiment (Go 1.26.8)
+
+The production UUID regexp was replaced with a fixed-length ASCII checker;
+case-insensitive duplicate detection and error messages are unchanged. The old
+regexp remains a test-only oracle. Tests cover all 256 byte substitutions at
+all 36 positions, version/variant combinations, and arbitrary plus near-valid
+fuzz inputs. A 30-second differential fuzz run completed 320,394 executions
+without a mismatch. The target is included in the scheduled fuzz matrix.
+
+A same-process microbenchmark (five samples) measured median valid UUID checks
+at 702 ns for the original regexp and 129 ns for the ASCII checker; both allocate
+zero bytes. These figures describe only the format check, not full user sync.
+
+Full HTTP timings were highly unstable on this machine: an initial sequential
+comparison even showed slower overall fetches despite faster validation. Three
+alternating baseline (`57f06e4` in a separate worktree)/candidate runs produced:
+
+| Operation | Baseline median | Candidate median |
+|---|---:|---:|
+| 10,000-user validation | 38.33 ms | 9.69 ms |
+| 50,000-user validation | 210.05 ms | 51.18 ms |
+| 10,000-user full HTTP fetch | 150.09 ms | 86.25 ms |
+| 50,000-user full HTTP fetch | 705.33 ms | 606.15 ms |
+
+These runs had wide ranges (50,000-user HTTP: baseline 579–848 ms, candidate
+391–732 ms), so **no stable endpoint speedup percentage is claimed**. The
+localized format-check improvement is supported by the same-process comparison;
+end-to-end gains must be remeasured on a quiet host before making capacity claims.
+
+```sh
+go test ./pkg -run '^$' -bench '^BenchmarkUUIDValidation$' -benchmem -count=5
+go test ./pkg -run '^$' -fuzz '^FuzzValidUserUUIDMatchesOriginal$' \
+  -fuzztime=30s -parallel=4
+```
+
 ## Release gate discovered during baseline work
 
 The GitHub CI run for `8214031` passed testing/lint but failed `govulncheck` with

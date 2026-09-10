@@ -7,12 +7,39 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 )
 
-var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+// validUserUUID preserves the panel UUID contract: canonical ASCII hex with
+// hyphens, versions 1–8, and RFC variant bits 10. Case is accepted unchanged.
+func validUserUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		case 14:
+			if c < '1' || c > '8' {
+				return false
+			}
+		case 19:
+			if c != '8' && c != '9' && c != 'a' && c != 'b' && c != 'A' && c != 'B' {
+				return false
+			}
+		default:
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 func isLocalHTTPHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
@@ -86,7 +113,7 @@ func validateUserList(userlist *UserListBody) error {
 		if strings.TrimSpace(user.Uuid) == "" {
 			return fmt.Errorf("user uuid is required for id %d", user.Id)
 		}
-		if !uuidPattern.MatchString(user.Uuid) {
+		if !validUserUUID(user.Uuid) {
 			return fmt.Errorf("user uuid is invalid for id %d", user.Id)
 		}
 		if user.SpeedLimit < 0 {
