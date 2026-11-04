@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.1.5
+
+Changes since v0.1.4:
+
+- Decode the shapes panel editors emit for settings: untouched settings arrive
+  as an empty array, numbers may arrive as strings, and header values may arrive
+  as a string or as a list. `TlsSettings` and `EncSettings` now normalize those
+  shapes in `UnmarshalJSON`; an unset field stays unset instead of failing the
+  decode, and a field of the wrong JSON type is still an error.
+- Add `TlsSettings.PublicKey`, `TlsSettings.Ech`, `TlsSettings.EchConfig` and
+  `EncSettings.Rtt`, which were previously dropped while decoding.
+- Add `ParseNetworkSettings` and the typed `NetworkSettings`, `XHTTPSettings`,
+  `XHTTPRange`, `TCPHeader` and `HeaderField` values for the tcp, ws,
+  httpupgrade, grpc and xhttp settings every node backend parses. Unknown keys
+  are reported as dotted paths rather than rejected.
+- Add the REALITY helpers `TlsSettings.DecodePrivateKey`, `DecodePublicKey`,
+  `DecodeShortID`, `Destination` and `DecodeMLDSA65Seed`, and
+  `EncSettings.DecodeKey` returning an `EncKeyKind`.
+- These helpers normalize and report only. Whether a value is acceptable for a
+  node, and what the node does with an unknown key, remains a node decision; the
+  README states that boundary.
+
+Compatibility: `TlsSettings` and `EncSettings` now define `UnmarshalJSON`, and
+`TlsSettings` gained a `[]string` field, so neither value is comparable with
+`==` and unkeyed struct literals in downstream code can break; use keyed
+literals. The API additions are additive and no exported symbol was removed. A
+scalar field the panel writes as `null` now means unset rather than an error,
+matching the existing handling of `[]`; a node-side parser that rejected `null`
+can therefore become more tolerant when it adopts `ParseNetworkSettings`.
+
+Dependencies: the patched development toolchain moves to Go 1.27.3, and the
+indirect `golang.org/x/net` and `golang.org/x/sys` requirements move to v0.58.0
+and v0.47.0. The module language minimum remains Go 1.25, and downstream
+applications should build with a supported, security-patched Go release.
+
 ## v0.1.4
 
 - Add an explicitly enabled, GET-only panel integration test and macOS/Windows

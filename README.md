@@ -9,6 +9,30 @@ A lightweight, robust Go client for the UniProxy API.
 - **Traffic reporting**: Report user upload/download counters.
 - **Online tracking**: Report online users and fetch alive counts.
 - **Resilient**: Sanitized errors, GET-only retry, response-size limits.
+- **Settings decoding**: Typed `networkSettings` parsing and REALITY /
+  encryption key helpers for node backends.
+
+## Scope and boundary
+
+This module is one side of a relationship: the panel is the source of truth for
+node configuration, users, traffic and online state, and a node reports back what
+it observed. Two rules keep that boundary in the right place.
+
+- It answers "what did the panel send" for the fields it models, and normalizes
+  the shapes panel editors emit: an untouched setting arrives as `[]`, a number
+  may arrive as a string, and a header value may arrive as a string or a list.
+- It does not decide what a node accepts. Protocol support, transport
+  restrictions, address and port policy, REALITY requirements, and how to treat
+  an unknown setting key all belong to the node.
+
+`ParseNetworkSettings` follows the same rule. It reports the settings it models
+and lists every other key in `NetworkSettings.UnknownKeys` instead of rejecting
+it, so a node decides whether an unknown key is a startup error, a warning, or
+nothing at all. Keep that accept/reject policy in the node: one change to a
+shared parser should not silently relax every backend at once.
+
+Errors and logs from this module are sanitized. They never contain tokens,
+private keys, UUIDs, panel URLs or response bodies.
 
 ## Installation
 
@@ -17,7 +41,7 @@ go get github.com/GoAsyncFunc/uniproxy
 ```
 
 Development and CI use the patched Go toolchain specified in `go.mod`
-(currently Go 1.26.8). The module language minimum remains Go 1.25; consumers
+(currently Go 1.27.3). The module language minimum remains Go 1.25; consumers
 should build with a supported, security-patched Go release. A dependency's
 `toolchain` directive does not force downstream applications to upgrade.
 
@@ -184,6 +208,55 @@ VLESS/VMess `tls_settings.xver` accepts integers or integer strings from 0 to 2;
 missing/null values default to 0. Hysteria configs must explicitly report
 `version: 1` for `hysteria` or `version: 2` for `hysteria2`. Missing or mismatched
 versions are parse errors and do not update cache validators.
+
+### Node settings decoding
+
+`GetNodeInfo` returns the protocol node in `NodeInfo.Vless`, `NodeInfo.VMess`,
+`NodeInfo.Trojan` and so on. Their `networkSettings` block stays raw JSON until
+it is decoded for the configured network:
+
+```go
+node, err := client.GetNodeInfo(ctx)
+if err != nil {
+	log.Fatal(err)
+}
+if node == nil || node.Vless == nil {
+	return // not modified, or not a VLESS node
+}
+
+settings, err := pkg.ParseNetworkSettings(node.Vless.Network, node.Vless.NetworkSettings)
+if err != nil {
+	log.Fatal(err)
+}
+log.Printf("network=%s path=%s host=%s", settings.Network, settings.Path, settings.Host)
+if len(settings.UnknownKeys) != 0 {
+	log.Printf("keys this SDK does not model: %v", settings.UnknownKeys)
+}
+```
+
+`ParseNetworkSettings` accepts `tcp`, `ws`, `httpupgrade`, `grpc` and `xhttp`.
+It returns the path, host and service name that apply, `XHTTP` for the xhttp
+extras (keeping the published defaults for fields the panel leaves out), and
+`TCPHeader` for `tcp` header obfuscation. An unsupported network name is an
+error, and unknown keys are reported rather than rejected.
+
+REALITY and encryption material decode through the settings values:
+
+```go
+tls := node.Vless.TlsSettings
+privateKey, err := tls.DecodePrivateKey() // base64url, 32 bytes
+shortID, err := tls.DecodeShortID()       // hexadecimal, 1 to 8 bytes
+destination, err := tls.Destination()     // dest, or server_name and server_port
+
+key, kind, err := node.Vless.EncryptionSettings.DecodeKey()
+// kind is pkg.EncKeyX25519, pkg.EncKeyOther or pkg.EncKeyNone
+```
+
+`TlsSettings` carries `public_key`, `ech`, `ech_config` and `mldsa65Seed` as the
+panel writes them, and `EncSettings` carries the `mode`, `rtt`, `ticket` and
+`server_padding` a node needs. These helpers check shapes and lengths and report
+what the panel sent; they do not decide whether a node serves the transport,
+enables REALITY, or accepts a key of a given kind. See the scope section above.
 
 ### Sync users
 
