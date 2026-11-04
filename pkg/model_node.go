@@ -3,7 +3,6 @@ package pkg
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 )
 
 // VMessNode is vmess node info
@@ -54,68 +53,142 @@ func (n *VlessNode) GetCommonNode() *CommonNode {
 	return &n.CommonNode
 }
 
+// TlsSettings is the panel's TLS and REALITY settings block. Untouched
+// settings arrive as an empty array, numbers may arrive as strings, and
+// ech_config may be a single string or a list; UnmarshalJSON normalizes those
+// shapes. See DecodePrivateKey, DecodePublicKey, DecodeShortID, Destination and
+// DecodeMLDSA65Seed for the REALITY helpers.
 type TlsSettings struct {
-	ServerName  string `json:"server_name"`
-	Dest        string `json:"dest"`
-	ServerPort  string `json:"server_port"`
-	ShortId     string `json:"short_id"`
-	PrivateKey  string `json:"private_key"`
-	Mldsa65Seed string `json:"mldsa65Seed"`
-	Xver        uint64 `json:"xver,string"`
+	ServerName  string   `json:"server_name"`
+	Dest        string   `json:"dest"`
+	ServerPort  string   `json:"server_port"`
+	ShortId     string   `json:"short_id"`
+	PrivateKey  string   `json:"private_key"`
+	PublicKey   string   `json:"public_key"`
+	Mldsa65Seed string   `json:"mldsa65Seed"`
+	Ech         string   `json:"ech"`
+	EchConfig   []string `json:"ech_config"`
+	Xver        uint64   `json:"xver"`
 }
 
-// UnmarshalJSON accepts the numeric and string forms emitted by panel editors.
-// Missing or null xver means no PROXY protocol (0).
+// UnmarshalJSON accepts the shapes panel editors emit: absent, null and [] for
+// untouched settings; server_port as a number or a string; ech_config as a
+// string or a list of strings; and xver as an integer or an integer string from
+// 0 to 2, absent meaning no PROXY protocol.
 func (t *TlsSettings) UnmarshalJSON(data []byte) error {
-	type alias TlsSettings
+	if settingsEmpty(data) {
+		*t = TlsSettings{}
+		return nil
+	}
 	var decoded struct {
-		alias
-		Xver json.RawMessage `json:"xver"`
+		ServerName  string          `json:"server_name"`
+		Dest        string          `json:"dest"`
+		ServerPort  json.RawMessage `json:"server_port"`
+		ShortId     string          `json:"short_id"`
+		PrivateKey  string          `json:"private_key"`
+		PublicKey   string          `json:"public_key"`
+		Mldsa65Seed string          `json:"mldsa65Seed"`
+		Ech         string          `json:"ech"`
+		EchConfig   json.RawMessage `json:"ech_config"`
+		Xver        json.RawMessage `json:"xver"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
-	var xver uint64
-	if len(decoded.Xver) > 0 && string(decoded.Xver) != "null" {
-		value := decoded.Xver
-		if value[0] == '"' {
-			var text string
-			if err := json.Unmarshal(value, &text); err != nil {
-				return fmt.Errorf("invalid xver")
-			}
-			value = []byte(text)
-		}
-		var err error
-		xver, err = strconv.ParseUint(string(value), 10, 64)
-		if err != nil {
-			return fmt.Errorf("xver must be an integer between 0 and 2")
-		}
+	port, err := settingsStringOrNumber(decoded.ServerPort)
+	if err != nil {
+		return fmt.Errorf("server_port must be a string or a number")
 	}
-	if xver > 2 {
-		return fmt.Errorf("xver must be an integer between 0 and 2")
+	echConfig, err := settingsStringList(decoded.EchConfig)
+	if err != nil {
+		return fmt.Errorf("ech_config must be a string or a list of strings")
 	}
-	decoded.alias.Xver = xver
-	*t = TlsSettings(decoded.alias)
+	xver, err := settingsXver(decoded.Xver)
+	if err != nil {
+		return err
+	}
+	*t = TlsSettings{
+		ServerName:  decoded.ServerName,
+		Dest:        decoded.Dest,
+		ServerPort:  port,
+		ShortId:     decoded.ShortId,
+		PrivateKey:  decoded.PrivateKey,
+		PublicKey:   decoded.PublicKey,
+		Mldsa65Seed: decoded.Mldsa65Seed,
+		Ech:         decoded.Ech,
+		EchConfig:   echConfig,
+		Xver:        xver,
+	}
 	return nil
 }
 
 func (t TlsSettings) String() string {
-	return "{ServerName:REDACTED Dest:REDACTED ServerPort:REDACTED ShortId:REDACTED PrivateKey:REDACTED Mldsa65Seed:REDACTED Xver:REDACTED}"
+	return "{ServerName:REDACTED Dest:REDACTED ServerPort:REDACTED ShortId:REDACTED PrivateKey:REDACTED PublicKey:REDACTED Mldsa65Seed:REDACTED Ech:REDACTED EchConfig:REDACTED Xver:REDACTED}"
 }
 
 func (t TlsSettings) GoString() string {
 	return t.String()
 }
 
+// EncKeyKind classifies an encryption private key by its decoded length.
+type EncKeyKind string
+
+const (
+	// EncKeyNone means no key is configured.
+	EncKeyNone EncKeyKind = ""
+	// EncKeyX25519 is a 32-byte X25519 key, what the panel generates.
+	EncKeyX25519 EncKeyKind = "x25519"
+	// EncKeyOther is a well-formed key of another length, such as a 64-byte
+	// ML-KEM-768 seed typed by hand.
+	EncKeyOther EncKeyKind = "other"
+)
+
+// EncSettings is the panel's VLESS encryption settings block. Untouched
+// settings arrive as an empty array, which UnmarshalJSON treats as absent.
 type EncSettings struct {
 	Mode          string `json:"mode"`
+	Rtt           string `json:"rtt"`
 	Ticket        string `json:"ticket"`
 	ServerPadding string `json:"server_padding"`
 	PrivateKey    string `json:"private_key"`
 }
 
+// UnmarshalJSON accepts absent, null and [] for untouched settings.
+func (e *EncSettings) UnmarshalJSON(data []byte) error {
+	if settingsEmpty(data) {
+		*e = EncSettings{}
+		return nil
+	}
+	type alias EncSettings
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*e = EncSettings(decoded)
+	return nil
+}
+
+// DecodeKey returns the decoded private key and its kind. The library reports
+// the shape only; whether a node supports a kind is the node's decision.
+func (e EncSettings) DecodeKey() ([]byte, EncKeyKind, error) {
+	if e.PrivateKey == "" {
+		return nil, EncKeyNone, nil
+	}
+	key, err := settingsBase64URL(e.PrivateKey)
+	if err != nil {
+		return nil, EncKeyNone, fmt.Errorf("private_key is not base64url")
+	}
+	if len(key) == 0 {
+		return nil, EncKeyNone, fmt.Errorf("private_key is empty")
+	}
+	if len(key) == x25519KeySize {
+		return key, EncKeyX25519, nil
+	}
+	return key, EncKeyOther, nil
+}
+
 func (e EncSettings) String() string {
-	return "{Mode:REDACTED Ticket:REDACTED ServerPadding:REDACTED PrivateKey:REDACTED}"
+	return "{Mode:REDACTED Rtt:REDACTED Ticket:REDACTED ServerPadding:REDACTED PrivateKey:REDACTED}"
 }
 
 func (e EncSettings) GoString() string {

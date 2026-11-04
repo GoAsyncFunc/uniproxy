@@ -39,7 +39,7 @@ func TestTlsSettingsXverForms(t *testing.T) {
 				t.Fatal(err)
 			}
 			var roundtrip TlsSettings
-			if err := json.Unmarshal(encoded, &roundtrip); err != nil || roundtrip != settings {
+			if err := json.Unmarshal(encoded, &roundtrip); err != nil || !reflect.DeepEqual(roundtrip, settings) {
 				t.Fatal("roundtrip failed")
 			}
 		})
@@ -51,7 +51,7 @@ func TestTlsSettingsXverForms(t *testing.T) {
 			if err := json.Unmarshal([]byte(`{"xver":`+value+`}`), &settings); err == nil {
 				t.Fatal("expected error")
 			}
-			if settings != before {
+			if !reflect.DeepEqual(settings, before) {
 				t.Fatal("failed decode modified settings")
 			}
 		})
