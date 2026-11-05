@@ -13,7 +13,7 @@ lint:
 	golangci-lint run
 
 lint_install:
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.6.2
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 
 test:
 	go test ./...
