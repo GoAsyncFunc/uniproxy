@@ -240,6 +240,14 @@ extras (keeping the published defaults for fields the panel leaves out), and
 `TCPHeader` for `tcp` header obfuscation. An unsupported network name is an
 error, and unknown keys are reported rather than rejected.
 
+For `ws`, `MaxEarlyData` decodes `maxEarlyData` as an optional integer: absent
+or `null` is nil, while an explicit zero is retained. `EarlyDataHeaderName`
+decodes `earlyDataHeaderName` as a string (null means unset). Both keys are
+shared transport settings for VLESS, Trojan and VMess. Other JSON types are
+errors. The SDK leaves defaults, size bounds, header validation and any `ed`
+path-query interpretation to the node; it does not perform an early-data
+handshake. Other networks continue to report these keys as unknown.
+
 REALITY and encryption material decode through the settings values:
 
 ```go

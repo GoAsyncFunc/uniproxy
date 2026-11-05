@@ -73,9 +73,13 @@ type NetworkSettings struct {
 	Path        string
 	Host        string
 	ServiceName string
-	XHTTP       XHTTPSettings
-	TCPHeader   *TCPHeader
-	UnknownKeys []string
+	// MaxEarlyData is nil when unset; an explicit zero remains distinguishable.
+	// Limits and defaults are the node's policy, not the SDK's.
+	MaxEarlyData        *int
+	EarlyDataHeaderName string
+	XHTTP               XHTTPSettings
+	TCPHeader           *TCPHeader
+	UnknownKeys         []string
 }
 
 // ParseNetworkSettings decodes networkSettings for one network: tcp, ws,
@@ -130,6 +134,14 @@ func parsePanelStreamSettings(network string, raw json.RawMessage) (NetworkSetti
 			}
 		case network == "grpc":
 			unknown = append(unknown, key)
+		case network == "ws" && key == "maxEarlyData":
+			if json.Unmarshal(value, &settings.MaxEarlyData) != nil {
+				return settings, nil, fmt.Errorf("panel networkSettings maxEarlyData must be an integer")
+			}
+		case network == "ws" && key == "earlyDataHeaderName":
+			if json.Unmarshal(value, &settings.EarlyDataHeaderName) != nil {
+				return settings, nil, fmt.Errorf("panel networkSettings earlyDataHeaderName must be a string")
+			}
 		case key == "path":
 			if settings.Path, err = settingsString(value); err != nil {
 				return settings, nil, fmt.Errorf("panel networkSettings path must be a string")

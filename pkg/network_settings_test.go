@@ -87,6 +87,56 @@ func TestParseNetworkSettingsHTTPUpgrade(t *testing.T) {
 	}
 }
 
+func TestParseNetworkSettingsWSEarlyData(t *testing.T) {
+	for _, raw := range []string{`{}`, `{"maxEarlyData":null,"earlyDataHeaderName":null}`} {
+		settings := parseNetwork(t, "ws", raw)
+		if settings.MaxEarlyData != nil || settings.EarlyDataHeaderName != "" {
+			t.Fatalf("unset early data changed: %+v", settings)
+		}
+	}
+	for _, maximum := range []int{0, 2048, -1, 1000000} {
+		// Numeric bounds and header policy belong to the node, including negatives.
+		raw, err := json.Marshal(map[string]any{
+			"path": "/ray?ed=2048", "headers": map[string]string{"Host": "cover.example"},
+			"maxEarlyData": maximum, "earlyDataHeaderName": "Sec-WebSocket-Protocol", "other": true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		settings := parseNetwork(t, "ws", string(raw))
+		if settings.MaxEarlyData == nil || *settings.MaxEarlyData != maximum || settings.EarlyDataHeaderName != "Sec-WebSocket-Protocol" {
+			t.Fatalf("early data lost: %+v", settings)
+		}
+		if settings.Path != "/ray?ed=2048" || settings.Host != "cover.example" || !reflect.DeepEqual(settings.UnknownKeys, []string{"other"}) {
+			t.Fatalf("existing settings changed: %+v", settings)
+		}
+	}
+}
+
+func TestParseNetworkSettingsWSEarlyDataTypes(t *testing.T) {
+	for _, raw := range []string{
+		`{"maxEarlyData":"sensitive-value"}`, `{"maxEarlyData":true}`, `{"maxEarlyData":1.5}`,
+		`{"maxEarlyData":[]}`, `{"maxEarlyData":{}}`, `{"maxEarlyData":999999999999999999999999}`,
+		`{"earlyDataHeaderName":123}`, `{"earlyDataHeaderName":false}`,
+		`{"earlyDataHeaderName":[]}`, `{"earlyDataHeaderName":{"sensitive-value":1}}`,
+	} {
+		_, err := ParseNetworkSettings("ws", json.RawMessage(raw))
+		if err == nil {
+			t.Fatalf("wrong field type accepted: %s", raw)
+		}
+		if err.Error() != "panel networkSettings maxEarlyData must be an integer" && err.Error() != "panel networkSettings earlyDataHeaderName must be a string" {
+			t.Fatalf("unexpected diagnostic: %v", err)
+		}
+	}
+	for _, network := range []string{"tcp", "httpupgrade", "grpc", "xhttp"} {
+		settings := parseNetwork(t, network, `{"maxEarlyData":2048,"earlyDataHeaderName":"X-Early"}`)
+		if settings.MaxEarlyData != nil || settings.EarlyDataHeaderName != "" ||
+			!reflect.DeepEqual(settings.UnknownKeys, []string{"earlyDataHeaderName", "maxEarlyData"}) {
+			t.Fatalf("WS fields interpreted for %s: %+v", network, settings)
+		}
+	}
+}
+
 func TestParseNetworkSettingsGRPC(t *testing.T) {
 	settings := parseNetwork(t, "grpc", `{"serviceName":"fixture-service"}`)
 	if settings.ServiceName != "fixture-service" || settings.Path != "" {

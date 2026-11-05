@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.1.6
+
+- Add WS `NetworkSettings.MaxEarlyData` and `EarlyDataHeaderName`, decoding
+  the panel's `maxEarlyData` and `earlyDataHeaderName` for every protocol using
+  that transport. An absent/null maximum is nil; explicit zero is preserved.
+- Reject wrong JSON types with static diagnostics; keep path/Host behavior
+  and unknown-key reporting unchanged. Bounds, defaults, header policy and
+  path normalization remain node decisions. No dependencies changed.
+
+Compatibility: no exported symbol was removed or function signature changed.
+Adding struct fields can break unkeyed literals; use keyed literals. The two
+WS keys are now modeled instead of being reported in `UnknownKeys`.
+
 ## v0.1.5
 
 Changes since v0.1.4:
