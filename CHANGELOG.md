@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.7
+
+- Add typed mKCP `KCPSettings` and `KCPHeader` to `ParseNetworkSettings` for the
+  panel's existing JSON contract. Preserve absent/null versus empty/zero values,
+  reject incorrect types with static errors, and report sorted unknown keys.
+- Keep transport policy and defaults in consuming nodes; no dependencies change.
+
+Compatibility: additive exported types/fields; no removed symbols or changed
+function signatures. Consumers should use keyed struct literals. Previously
+unsupported `kcp` settings now decode, without claiming client wire support.
+
 ## v0.1.6
 
 - Add WS `NetworkSettings.MaxEarlyData` and `EarlyDataHeaderName`, decoding

@@ -42,6 +42,23 @@ type TCPHeader struct {
 // string, a "min-max" string, or the panel's "-1" sentinel.
 type XHTTPRange struct{ Min, Max int }
 
+// KCPHeader preserves the presence of a panel mKCP camouflage header object.
+// Acceptable header types are a node policy, not an SDK decision.
+type KCPHeader struct{ Type string }
+
+// KCPSettings decodes panel mKCP settings without transport defaults or bounds.
+// Pointers distinguish missing/null fields from explicit zero or empty values.
+type KCPSettings struct {
+	Header           *KCPHeader
+	Seed             *string
+	MTU              *int
+	TTI              *int
+	UplinkCapacity   *int
+	DownlinkCapacity *int
+	CWNDMultiplier   *int
+	MaxSendingWindow *int
+}
+
 // XHTTPSettings is the allow-listed xhttp extra surface. Absent and null fields
 // keep the published panel defaults.
 type XHTTPSettings struct {
@@ -79,17 +96,20 @@ type NetworkSettings struct {
 	EarlyDataHeaderName string
 	XHTTP               XHTTPSettings
 	TCPHeader           *TCPHeader
+	KCP                 KCPSettings
 	UnknownKeys         []string
 }
 
 // ParseNetworkSettings decodes networkSettings for one network: tcp, ws,
-// httpupgrade, grpc or xhttp. Absent, null and [] mean empty settings. ws and
+// httpupgrade, grpc, xhttp or kcp. Absent, null and [] mean empty settings. ws and
 // xhttp default the path to "/", httpupgrade keeps the panel's value, grpc
 // carries only serviceName and no path, and tcp carries the HTTP header. An
 // unsupported network name is an error; which networks a node serves is the
 // node's decision.
 func ParseNetworkSettings(network string, raw json.RawMessage) (NetworkSettings, error) {
 	switch network {
+	case "kcp":
+		return parsePanelKCP(raw)
 	case "tcp":
 		header, unknown, err := parsePanelTCPHeader(raw)
 		if err != nil {
@@ -116,6 +136,55 @@ func ParseNetworkSettings(network string, raw json.RawMessage) (NetworkSettings,
 	default:
 		return NetworkSettings{Network: network}, fmt.Errorf("unsupported panel network %q", network)
 	}
+}
+
+func parsePanelKCP(raw json.RawMessage) (NetworkSettings, error) {
+	settings := NetworkSettings{Network: "kcp"}
+	fields, err := settingsObject(raw)
+	if err != nil {
+		return settings, fmt.Errorf("panel networkSettings must be an object")
+	}
+	numbers := map[string]**int{
+		"mtu": &settings.KCP.MTU, "tti": &settings.KCP.TTI,
+		"uplinkCapacity": &settings.KCP.UplinkCapacity, "downlinkCapacity": &settings.KCP.DownlinkCapacity,
+		"cwndMultiplier": &settings.KCP.CWNDMultiplier, "maxSendingWindow": &settings.KCP.MaxSendingWindow,
+	}
+	for key, value := range fields {
+		if target, ok := numbers[key]; ok {
+			if json.Unmarshal(value, target) != nil {
+				return settings, fmt.Errorf("panel networkSettings %s must be an integer", key)
+			}
+			continue
+		}
+		switch key {
+		case "seed":
+			if json.Unmarshal(value, &settings.KCP.Seed) != nil {
+				return settings, fmt.Errorf("panel networkSettings seed must be a string")
+			}
+		case "header":
+			if string(value) == "null" {
+				continue
+			}
+			header, err := settingsObject(value)
+			if err != nil {
+				return settings, fmt.Errorf("panel networkSettings header must be an object")
+			}
+			settings.KCP.Header = &KCPHeader{}
+			for field, rawValue := range header {
+				if field == "type" {
+					if json.Unmarshal(rawValue, &settings.KCP.Header.Type) != nil {
+						return settings, fmt.Errorf("panel networkSettings header.type must be a string")
+					}
+				} else {
+					settings.UnknownKeys = append(settings.UnknownKeys, "header."+field)
+				}
+			}
+		default:
+			settings.UnknownKeys = append(settings.UnknownKeys, key)
+		}
+	}
+	sort.Strings(settings.UnknownKeys)
+	return settings, nil
 }
 
 // parsePanelStreamSettings decodes ws, httpupgrade and grpc settings.

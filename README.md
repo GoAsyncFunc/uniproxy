@@ -234,7 +234,10 @@ if len(settings.UnknownKeys) != 0 {
 }
 ```
 
-`ParseNetworkSettings` accepts `tcp`, `ws`, `httpupgrade`, `grpc` and `xhttp`.
+`ParseNetworkSettings` accepts `tcp`, `ws`, `httpupgrade`, `grpc`, `xhttp` and `kcp`.
+For mKCP it preserves optional header/seed and six numeric fields in `KCPSettings`;
+nil means missing/null, while explicit empty/zero values remain distinguishable.
+Wire profiles, defaults, bounds and client applicability belong to the node.
 It returns the path, host and service name that apply, `XHTTP` for the xhttp
 extras (keeping the published defaults for fields the panel leaves out), and
 `TCPHeader` for `tcp` header obfuscation. An unsupported network name is an
