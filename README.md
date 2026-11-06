@@ -31,6 +31,18 @@ it, so a node decides whether an unknown key is a startup error, a warning, or
 nothing at all. Keep that accept/reject policy in the node: one change to a
 shared parser should not silently relax every backend at once.
 
+### Cross-protocol contracts
+
+UniProxy and its consuming node backends serve a growing set of panel protocols.
+When at least two protocols give a capability the same meaning, they may share
+a stable contract and generic implementation. The contract must make ownership,
+units, presence/null/zero behavior, normalization and compatibility explicit.
+UniProxy models and normalizes what the panel sends; each backend decides what
+it accepts. Protocol-specific authentication, commands, address encodings and
+wire frames remain separate even when decoded datagrams or relays share
+internal machinery. This architecture does not imply that fixtures establish
+live client or backend support. See [protocol contract guidance](docs/protocol-contracts.md).
+
 Errors and logs from this module are sanitized. They never contain tokens,
 private keys, UUIDs, panel URLs or response bodies.
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- Document the cross-protocol public-contract boundary between UniProxy and
+  consuming node backends. No exported API or runtime behavior changed.
+
 ## v0.1.7
 
 - Add typed mKCP `KCPSettings` and `KCPHeader` to `ParseNetworkSettings` for the
